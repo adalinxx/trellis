@@ -47,6 +47,21 @@ export async function sponsored(sdk, sponsor, draft, privateKey, { signal } = {}
   return sdk.transactionPayload({ ...signatures, [publicKey]: signature }, body);
 }
 
+/**
+ * The chain whose work pays `sponsor` for storage: `preferred` if it sets a
+ * rate there, else any chain it does (work is work), else null. From the
+ * sponsor's `GET /terms`.
+ */
+export async function storageChain(sponsor, preferred) {
+  try {
+    const response = await fetch(`${sponsor.replace(/\/+$/, "")}/terms`, { signal: AbortSignal.timeout(15_000) });
+    const rates = Object.entries((await response.json())?.storageRates ?? {}).filter(([, rate]) => Number(rate) > 0).map(([chain]) => chain);
+    return rates.includes(preferred) ? preferred : (rates[0] ?? null);
+  } catch {
+    return null;
+  }
+}
+
 const volumeBytes = (volume) => Object.values(volume.entries).reduce((n, b64) => n + Math.ceil((b64.length * 3) / 4), 0);
 
 /**

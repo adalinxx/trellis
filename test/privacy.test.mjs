@@ -36,10 +36,13 @@ function identifying() {
   return [...found].filter((value) => value && value.length >= 4).map((value) => value.toLowerCase());
 }
 
-const tokens = identifying();
+// On a CI runner the machine's user is the runner's, which names no one (and
+// "runner" is in the workflow). The pre-commit hook runs this where it counts.
+const ci = process.env.GITHUB_ACTIONS === "true" ? "a CI runner's identity names no one" : false;
+const tokens = ci ? [] : identifying();
 const leaks = (text) => tokens.some((token) => text.toLowerCase().includes(token));
 
-test("no file names this machine or its user", () => {
+test("no file names this machine or its user", { skip: ci }, () => {
   const files = quiet("git", ["-C", repo, "ls-files", "--cached", "--others", "--exclude-standard"]).split("\n").filter(Boolean);
   const built = "policy/target/wasm32-unknown-unknown/release/trellis_policy.wasm";
   if (existsSync(join(repo, built))) files.push(built);
@@ -47,7 +50,7 @@ test("no file names this machine or its user", () => {
   assert.deepEqual(named, [], "these files name this machine or its user");
 });
 
-test("no commit names this machine's user", () => {
+test("no commit names this machine's user", { skip: ci }, () => {
   const people = quiet("git", ["-C", repo, "log", "--all", "--format=%an <%ae>%n%cn <%ce>"]);
   assert.ok(!leaks(people), "a commit's author or committer names this machine's user");
 });

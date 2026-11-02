@@ -21,7 +21,7 @@ import * as sdk from "../vendor/lattice-sdk.js";
 import { git, objectReader, objectsBetween, requireSha256, store } from "./git.mjs";
 import { readObject } from "./objects.mjs";
 import * as records from "./records.mjs";
-import { keep, sponsored } from "./sponsor.mjs";
+import { keep, sponsored, storageChain } from "./sponsor.mjs";
 import { anyHost, tip, view, volumeLoader } from "./state.mjs";
 import { encode, fetchObjects } from "./transfer.mjs";
 import { changes, transaction } from "./write.mjs";
@@ -249,10 +249,11 @@ export async function main(argv = process.argv.slice(2)) {
     for (const [id, cid] of known) cache.byId.set(id, cid);
     cache.save();
 
-    const chainName = chainPath.join("/");
     if (volumes.length > 0) {
+      const workOn = await storageChain(sponsor, chainPath.join("/"));
+      if (!workOn) return fail("the sponsor keeps no files (no storage rate in its /terms)");
       say(`keeping ${volumes.length} blocks through the sponsor, paid with this machine's work`);
-      await keep(sdk, sponsor, chainName, volumes, { progress: ({ stored, total }) => say(`kept ${stored}/${total}`) });
+      await keep(sdk, sponsor, workOn, volumes, { progress: ({ stored, total }) => say(`kept ${stored}/${total}`) });
     }
 
     const state = await chain.state();
