@@ -25,6 +25,19 @@ git push origin main
 git clone trellis::<owner address>/<repo>                 # needs only trellis.node (or TRELLIS_NODE)
 ```
 
+### Testnet
+
+Trellis runs on testnet as `Nexus/testnet/trellis`, served publicly by
+`lattice-testnet-apps-iad.fly.dev`, with a sponsor beside it:
+
+```sh
+git config trellis.node https://lattice-testnet-apps-iad.fly.dev
+git config trellis.sponsor https://lattice-testnet-apps-iad.fly.dev:8650/sponsor
+git config trellis.chain Nexus/testnet/trellis
+```
+
+Testnet may be reset; don't keep anything only there.
+
 Each setting can also come from the environment: `TRELLIS_NODE`,
 `TRELLIS_SPONSOR`, `TRELLIS_KEY`, `TRELLIS_CHAIN` (`Nexus/trellis` by
 default). `trellis.node` may list several nodes, comma-separated: blocks are
