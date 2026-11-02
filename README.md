@@ -28,7 +28,8 @@ git clone trellis::<owner address>/<repo>                 # needs only trellis.n
 ### Testnet
 
 Trellis runs on testnet as `Nexus/testnet/trellis`, served publicly by
-`lattice-testnet-apps-iad.fly.dev`, with a sponsor beside it:
+`lattice-testnet-apps-iad.fly.dev` and `lattice-testnet-apps-ams.fly.dev`
+(list both in `trellis.node` to read from either), with a sponsor on iad:
 
 ```sh
 git config trellis.node https://lattice-testnet-apps-iad.fly.dev
