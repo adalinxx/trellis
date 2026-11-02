@@ -1,0 +1,4 @@
+#!/bin/sh
+# Refuse a commit that names this machine or its user (test/privacy.test.mjs).
+# Enable with: git config core.hooksPath .githooks
+exec node --test --test-reporter=dot test/privacy.test.mjs

@@ -1,0 +1,124 @@
+name: Test
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# The node and sponsor the end-to-end test runs against, pinned to commits it
+# passes on. Move a pin on purpose, in its own commit, after running the test.
+env:
+  NODE_VERSION: "22"
+  RUST_VERSION: "1.96.0"
+  LATTICE_NODE_REPO: 0xLattice/lattice-node
+  LATTICE_NODE_REF: 9abd15b1bb05a0d4305e83f64c4676a6e296071f # the node lattice-sponsor builds on
+  LATTICE_SPONSOR_REPO: 0xLattice/lattice-sponsor
+  LATTICE_SPONSOR_REF: 24d8c4def3bd47c45b4cd10115762894e5185ea5 # keeps files for work (--sell-storage)
+
+jobs:
+  client:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the privacy test reads every commit
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - run: npm test
+
+  policy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: wasm32-unknown-unknown
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Build
+        working-directory: policy
+        run: cargo build --release --target wasm32-unknown-unknown
+      - name: The committed module is the one the source builds to
+        run: cmp policy/target/wasm32-unknown-unknown/release/trellis_policy.wasm chain/trellis_policy.wasm
+      - name: Policy tests
+        working-directory: policy
+        run: LATTICE_SDK_CORE=${{ github.workspace }}/vendor/lattice-sdk.js node --test test/policy.test.mjs
+
+  node:
+    name: Build the Lattice node and sponsor
+    runs-on: ubuntu-latest
+    container: swift:6.1-jammy
+    timeout-minutes: 90
+    steps:
+      - id: cache
+        uses: actions/cache@v4
+        with:
+          path: bin
+          key: lattice-node-${{ env.LATTICE_NODE_REF }}-sponsor-${{ env.LATTICE_SPONSOR_REF }}-static-1
+      - if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.LATTICE_NODE_REPO }}
+          ref: ${{ env.LATTICE_NODE_REF }}
+          path: lattice-node
+      - if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.LATTICE_SPONSOR_REPO }}
+          ref: ${{ env.LATTICE_SPONSOR_REF }}
+          path: lattice-sponsor
+      - if: steps.cache.outputs.cache-hit != 'true'
+        name: Build
+        shell: bash
+        run: |
+          apt-get update && apt-get install -y --no-install-recommends libsqlite3-dev
+          cd lattice-node
+          # Static Swift runtime, so the binaries run on a plain runner. The
+          # lattice command runs the node, the miner and its coordinator from beside it.
+          swift build --static-swift-stdlib
+          mkdir ../bin
+          cp "$(swift build --static-swift-stdlib --show-bin-path)"/{lattice,lattice-node,lattice-miner,lattice-mining-coordinator} ../bin/
+          cd ../lattice-sponsor
+          swift build --static-swift-stdlib --product lattice-sponsor
+          cp "$(swift build --static-swift-stdlib --show-bin-path)"/lattice-sponsor ../bin/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lattice
+          path: bin
+          retention-days: 3
+
+  # A private host, a sponsor and a reader's node: coinless pushes, through
+  # the client and through stock git, and clones from peers.
+  e2e:
+    needs: node
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      LATTICE: ${{ github.workspace }}/.deps/bin/lattice
+      E2E_SECONDS: "600"
+      TRELLIS_WAIT_SECONDS: "600"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: lattice
+          path: .deps/bin
+      # The node links the Swift runtime in, but not these.
+      - run: chmod +x .deps/bin/* && sudo apt-get update && sudo apt-get install -y --no-install-recommends libsqlite3-0 libcurl4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - run: node e2e/run.mjs
+      - if: failure()
+        name: The nodes' and the sponsor's logs
+        run: |
+          find "${RUNNER_TEMP:-/tmp}" /tmp -path '*trellis-e2e-*' -name '*.log' -type f 2>/dev/null | sort -u |
+            while IFS= read -r f; do
+              echo "::group::$f"; tail -n 200 "$f" || true; echo "::endgroup::"
+            done
