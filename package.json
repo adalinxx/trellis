@@ -1,0 +1,7 @@
+{
+  "name": "trellis",
+  "private": true,
+  "type": "module",
+  "bin": { "git-remote-trellis": "bin/git-remote-trellis" },
+  "scripts": { "test": "node --test client/*.test.mjs test/*.test.mjs" }
+}

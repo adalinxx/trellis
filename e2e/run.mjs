@@ -236,6 +236,68 @@ try {
   assert.equal(run(clone, "log", "--format=%s", "main"), "third\nsecond\nfirst");
   assert.equal(run(clone, "rev-parse", "main:data.bin"), run(repo, "rev-parse", "main:data.bin"));
   console.log(`reader: cloned ${objects.length} objects from peers; same history, fsck clean`);
+
+  // Stock git through bin/git-remote-trellis. Carol, coinless, pushes with a key file.
+  const carolKey = sdk.generatePrivateKey();
+  const carol = sdk.accountFromPrivateKey(carolKey);
+  const keyFile = join(work, "carol.json");
+  writeFileSync(keyFile, JSON.stringify({ address: carol.address, privateKey: Buffer.from(carolKey).toString("hex") }));
+  const helperEnv = (node, key = keyFile) => ({
+    ...process.env,
+    PATH: `${here("../bin")}:${process.env.PATH}`,
+    TRELLIS_NODE: node,
+    TRELLIS_SPONSOR: sponsorURL,
+    TRELLIS_KEY: key,
+    TRELLIS_CHAIN: CHAIN.join("/"),
+    GIT_TERMINAL_PROMPT: "0",
+  });
+  const gitWith = (env, cwd, ...args) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8", env, stdio: ["ignore", "pipe", "pipe"] }).trim();
+  const gitFails = (env, cwd, ...args) => {
+    try {
+      gitWith(env, cwd, ...args);
+    } catch (error) {
+      return String(error.stderr);
+    }
+    throw new Error(`git ${args.join(" ")} should have failed`);
+  };
+  const address = `trellis::${carol.address}/tools`;
+  const tools = newRepo(join(work, "tools"));
+  writeFileSync(join(tools, "tool.sh"), "#!/bin/sh\necho tool\n");
+  run(tools, "add", "-A");
+  run(tools, "commit", "-q", "-m", "tool");
+  run(tools, "remote", "add", "origin", address);
+  gitWith(helperEnv(authorNode), tools, "push", "-q", "origin", "main");
+  assert.equal(BigInt((await account(carol.address)).balance ?? 0), 0n, "Carol has no coins");
+  console.log("git push: a new repo, coinless");
+
+  // Cloned through the reader's node.
+  const cloneDir = join(work, "tools-clone");
+  gitWith(helperEnv(readerNode), work, "clone", "-q", address, cloneDir);
+  assert.equal(run(cloneDir, "rev-parse", "--show-object-format"), "sha256");
+  assert.equal(run(cloneDir, "rev-parse", "HEAD"), run(tools, "rev-parse", "HEAD"));
+  run(cloneDir, "fsck", "--strict");
+  console.log("git clone: through the reader's node, same HEAD");
+
+  // A second commit and a tag; the clone fetches both.
+  writeFileSync(join(tools, "tool.sh"), "#!/bin/sh\necho tool v2\n");
+  run(tools, "commit", "-q", "-am", "v2");
+  run(tools, "tag", "-a", "-m", "release", "v2");
+  gitWith(helperEnv(authorNode), tools, "push", "-q", "origin", "main", "v2");
+  await until("the reader's node has v2", async () => (await records.refs(sdk, await state(readerNode), carol.address, "tools")).has("refs/tags/v2"));
+  gitWith(helperEnv(readerNode), cloneDir, "fetch", "-q", "--tags", "origin");
+  assert.equal(run(cloneDir, "rev-parse", "origin/main"), run(tools, "rev-parse", "main"));
+  assert.equal(run(cloneDir, "rev-parse", "v2"), run(tools, "rev-parse", "v2"));
+  console.log("git fetch: a new commit and an annotated tag");
+
+  // A rewrite needs --force; someone else's key can't push at all.
+  run(tools, "commit", "-q", "--amend", "-m", "v2, reworded");
+  assert.match(gitFails(helperEnv(authorNode), tools, "push", "origin", "main"), /rejected|non-fast-forward/);
+  gitWith(helperEnv(authorNode), tools, "push", "-q", "--force", "origin", "main");
+  const aliceKey = join(work, "alice.json");
+  writeFileSync(aliceKey, JSON.stringify({ address: alice.address, privateKey: Buffer.from(alice.privateKey).toString("hex") }));
+  run(tools, "commit", "-q", "--allow-empty", "-m", "by someone else");
+  assert.match(gitFails(helperEnv(authorNode, aliceKey), tools, "push", "origin", "main"), /this key is/);
+  console.log("git push: a rewrite only with --force; another account's key refused");
   console.log("PASS");
 } finally {
   sponsor?.kill();

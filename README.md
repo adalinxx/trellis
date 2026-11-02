@@ -6,9 +6,32 @@ every commit, tree and file is a block named by its CID, which anyone can keep
 and serve. No coins are needed: a sponsor pays each write's fee and keeps each
 push's objects in return for a moment of the pusher's work.
 
-This is phase 1: the chain, the record format, the object format, and
-coinless pushes and clones in `client/`. The `git-remote-trellis` helper, the
-web viewer, import, and issues and pull requests come next.
+Stock git pushes and clones through `git-remote-trellis`. The web viewer,
+import from GitHub, and issues and pull requests come next.
+
+## Use
+
+Put `bin/` on your `PATH` (it needs Node 22 or later), and use SHA-256
+repositories:
+
+```sh
+git init --object-format=sha256 myrepo
+git config trellis.node https://<a node serving Nexus/trellis>
+git config trellis.sponsor https://<a lattice-sponsor>   # pays fees and keeps objects, for work
+git config trellis.key ~/.lattice/me.json                 # lattice key generate --out ...
+git remote add origin trellis::<your address>/myrepo
+git push origin main
+
+git clone trellis::<owner address>/<repo>                 # needs only trellis.node (or TRELLIS_NODE)
+```
+
+Each setting can also come from the environment: `TRELLIS_NODE`,
+`TRELLIS_SPONSOR`, `TRELLIS_KEY`, `TRELLIS_CHAIN` (`Nexus/trellis` by
+default). `trellis.node` may list several nodes, comma-separated: blocks are
+read from any of them, and writes go to the first. A push needs no coins. A
+rewrite needs `--force`, and a key can push only to its own address. The
+helper keeps `$GIT_DIR/trellis/cids`, the CID of each object it has seen, so
+it never walks old history twice.
 
 ## Chain
 
@@ -57,6 +80,7 @@ history; a clone recomputes it and refuses a block whose claim is wrong.
   first, skipping what the other side has) and `fetchObjects` (Volumes → git
   objects, every block checked against its CID).
 - `client/git.mjs`: a local repository through the `git` command (Node).
+- `client/remote.mjs`: the git remote helper (`bin/git-remote-trellis`).
 
 ## No coins
 
@@ -69,12 +93,18 @@ work. The sponsor is trusted to keep the data, never to keep it correct.
 ## Tests
 
 ```sh
-node --test client/*.test.mjs
+npm test
 ```
 
-The end-to-end test runs a private host, a sponsor and a reader's node. A
-coinless account pushes twice, another can't move its ref, and the reader
-clones from peers:
+`test/privacy.test.mjs` fails if any file git would commit, the built policy
+module, or any commit names this machine or its user: the home path, user
+name, full name, or the identity git falls back to. It works them out when it
+runs and never prints them.
+
+The end-to-end test runs a private host, a sponsor and a reader's node. Two
+coinless accounts push, through the client library and through stock git.
+Another account can't move their refs, a rewrite needs `--force`, and the
+reader clones and fetches (a new commit, an annotated tag) from peers:
 
 ```sh
 LATTICE=<lattice-node>/.build/debug/lattice \

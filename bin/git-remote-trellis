@@ -1,0 +1,8 @@
+#!/usr/bin/env node
+// git runs this for trellis:: addresses; put bin/ on PATH. See client/remote.mjs.
+import { main } from "../client/remote.mjs";
+
+main().catch((error) => {
+  process.stderr.write(`trellis: ${error?.message ?? error}\n`);
+  process.exit(1);
+});
