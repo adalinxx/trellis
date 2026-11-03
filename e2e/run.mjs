@@ -299,6 +299,46 @@ try {
   assert.match(gitFails(helperEnv(authorNode, aliceKey), tools, "push", "origin", "main"), /this key is/);
   console.log("git push: a rewrite only with --force; another account's key refused");
 
+  // trellis import: a SHA-1 repository on master, signed, then pushed whole.
+  const old = join(work, "old-project");
+  mkdirSync(old);
+  run(old, "init", "-q", "--object-format=sha1", "-b", "master");
+  run(old, "config", "user.name", "Dana");
+  run(old, "config", "user.email", "dana@example.com");
+  writeFileSync(join(old, "notes.txt"), "from a SHA-1 repo\n");
+  run(old, "add", "-A");
+  run(old, "commit", "-q", "-m", "old history");
+  run(old, "tag", "-a", "-m", "old release", "v0");
+  const imported = join(work, "imported");
+  execFileSync(here("../bin/trellis"), ["import", old, imported], { stdio: "inherit" });
+  const importAddress = `trellis::${carol.address}/old-project`;
+  run(imported, "remote", "add", "origin", importAddress);
+  gitWith(helperEnv(authorNode), imported, "push", "-q", "origin", "--all");
+  gitWith(helperEnv(authorNode), imported, "push", "-q", "origin", "--tags", "refs/notes/commits");
+  const importClone = join(work, "imported-clone");
+  gitWith(helperEnv(readerNode), work, "clone", "-q", importAddress, importClone);
+  assert.equal(run(importClone, "symbolic-ref", "--short", "HEAD"), "master", "HEAD: the only branch, master");
+  assert.equal(readFileSync(join(importClone, "notes.txt"), "utf8"), "from a SHA-1 repo\n");
+  gitWith(helperEnv(readerNode), importClone, "fetch", "-q", "origin", "refs/notes/commits:refs/notes/commits");
+  assert.match(run(importClone, "log", "-1"), new RegExp(`Imported from old-project as ${run(old, "rev-parse", "master")}`));
+  assert.equal(run(importClone, "cat-file", "-t", "v0"), "tag");
+  console.log("trellis import: a SHA-1 repo pushed whole; cloned with master checked out, its old ids in notes");
+
+  // A push that fails before its blocks are kept, then succeeds: the second
+  // sends every block again, so a clone gets them all.
+  const retried = newRepo(join(work, "retried"));
+  writeFileSync(join(retried, "file.txt"), "kept on the second try\n");
+  run(retried, "add", "-A");
+  run(retried, "commit", "-q", "-m", "retried");
+  const retriedAddress = `trellis::${carol.address}/retried`;
+  run(retried, "remote", "add", "origin", retriedAddress);
+  gitFails({ ...helperEnv(authorNode), TRELLIS_SPONSOR: "http://127.0.0.1:1" }, retried, "push", "origin", "main");
+  gitWith(helperEnv(authorNode), retried, "push", "-q", "origin", "main");
+  const retriedClone = join(work, "retried-clone");
+  gitWith({ ...helperEnv(readerNode), TRELLIS_READ_SECONDS: "60" }, work, "clone", "-q", retriedAddress, retriedClone);
+  assert.equal(readFileSync(join(retriedClone, "file.txt"), "utf8"), "kept on the second try\n");
+  console.log("git push: after a failed push, the next one keeps every block");
+
   // Optional (E2E_BIG_MB=<n>): a repo of about n MiB, many small files and a
   // few large ones over several commits, pushed by stock git and cloned
   // through the reader's node.

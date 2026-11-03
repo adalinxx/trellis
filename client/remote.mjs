@@ -168,7 +168,10 @@ export async function main(argv = process.argv.slice(2)) {
       const refs = await remoteRefs();
       out(":object-format sha256\n");
       for (const [ref, { id }] of refs) out(`${id} ${ref}\n`);
-      if (refs.has("refs/heads/main")) out("@refs/heads/main HEAD\n");
+      // HEAD: main, else master, else the first branch.
+      const branches = [...refs.keys()].filter((ref) => ref.startsWith("refs/heads/")).sort();
+      const head = ["refs/heads/main", "refs/heads/master"].find((ref) => refs.has(ref)) ?? branches[0];
+      if (head) out(`@${head} HEAD\n`);
       out("\n");
     } else if (line.startsWith("fetch ")) {
       const wanted = [];
@@ -251,15 +254,16 @@ export async function main(argv = process.argv.slice(2)) {
     } finally {
       objects.close();
     }
-    for (const [id, cid] of known) cache.byId.set(id, cid);
-    cache.save();
-
     if (volumes.length > 0) {
       const workOn = await storageChain(sponsor, chainPath.join("/"));
       if (!workOn) return fail("the sponsor keeps no files (no storage rate in its /terms)");
       say(`keeping ${volumes.length} blocks through the sponsor, paid with this machine's work`);
       await keep(sdk, sponsor, workOn, volumes, { progress: ({ stored, total }) => say(`kept ${stored}/${total}`) });
     }
+    // Only now: the cache stands for what is kept, and a push that stopped
+    // before every block was kept must send them again.
+    for (const [id, cid] of known) cache.byId.set(id, cid);
+    cache.save();
 
     const state = await chain.state();
     const writes = [

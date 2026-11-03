@@ -6,8 +6,9 @@ every commit, tree and file is a block named by its CID, which anyone can keep
 and serve. No coins are needed: a sponsor pays each write's fee and keeps each
 push's objects in return for a moment of the pusher's work.
 
-Stock git pushes and clones through `git-remote-trellis`. The web viewer,
-import from GitHub, and issues and pull requests come next.
+Stock git pushes and clones through `git-remote-trellis`, and `trellis
+import` brings a repo from GitHub. The web viewer, and issues and pull
+requests, come next.
 
 ## Use
 
@@ -44,6 +45,26 @@ everything pushed through it). Any node can serve a clone, but one that
 doesn't hold the blocks fetches each from its peers, a few at a time: a
 3,200-object repo clones in about 16 s from the host and about 5 minutes
 through such a node.
+
+### Bring a repo from GitHub
+
+```sh
+trellis import https://github.com/<org>/<repo> myrepo   # any URL or path git clones
+cd myrepo
+git remote add origin trellis::<your address>/<repo>
+git push origin --all && git push origin --tags refs/notes/commits
+```
+
+`trellis import` converts a SHA-1 repository to SHA-256 with git's own
+`fast-export` and `fast-import`: branches and tags, with every author, date,
+message, file and mode kept byte for byte. Only the ids change, so a
+signature made over the old ids no longer verifies. Each commit and annotated
+tag gets a git note (`refs/notes/commits`, shown by `git log`) with its old
+id and, if it was signed, the signature as text. An old id in a message or a
+link can still be found with `git log --notes --grep=<id>`. The notes name a
+URL source without credentials and a local path by its last segment only. A
+repository with submodules is refused: their ids are SHA-1. Issues and pull
+requests aren't imported yet.
 
 Each setting can also come from the environment: `TRELLIS_NODE`,
 `TRELLIS_SPONSOR`, `TRELLIS_KEY`, `TRELLIS_CHAIN` (`Nexus/trellis` by
@@ -101,6 +122,7 @@ history; a clone recomputes it and refuses a block whose claim is wrong.
   objects, every block checked against its CID).
 - `client/git.mjs`: a local repository through the `git` command (Node).
 - `client/remote.mjs`: the git remote helper (`bin/git-remote-trellis`).
+- `client/import.mjs`: `trellis import` (`bin/trellis`).
 
 ## No coins
 

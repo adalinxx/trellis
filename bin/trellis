@@ -1,0 +1,27 @@
+#!/usr/bin/env node
+// trellis import <source> [<directory>]: a SHA-1 repository as a new SHA-256
+// one, ready to push to a trellis:: remote. See client/import.mjs.
+import { basename, resolve } from "node:path";
+import { importRepository } from "../client/import.mjs";
+
+const usage = "usage: trellis import <github url or path> [<directory>]";
+const [command, source, directory] = process.argv.slice(2);
+if (command !== "import" || !source) {
+  process.stderr.write(`${usage}\n`);
+  process.exit(2);
+}
+const dest = resolve(directory ?? basename(source.replace(/\/+$/, "")).replace(/\.git$/, ""));
+importRepository(source, dest).then(
+  ({ head, branches, tags, commits, signed }) => {
+    process.stdout.write(
+      `imported ${commits} commits, ${branches.length} branches and ${tags.length} tags into ${dest} (SHA-256; HEAD ${head})\n` +
+        (signed ? `${signed} signatures kept as text in git notes: they were made over the old ids\n` : "") +
+        `next: git -C ${dest} remote add origin trellis::<your address>/<name>\n` +
+        `      git -C ${dest} push origin --all && git -C ${dest} push origin --tags refs/notes/commits\n`,
+    );
+  },
+  (error) => {
+    process.stderr.write(`trellis: ${error?.message ?? error}\n`);
+    process.exit(1);
+  },
+);

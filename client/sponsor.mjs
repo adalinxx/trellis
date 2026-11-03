@@ -74,14 +74,19 @@ export async function storageChain(sponsor, preferred) {
   }
 }
 
-const volumeBytes = (volume) => Object.values(volume.entries).reduce((n, b64) => n + Math.ceil((b64.length * 3) / 4), 0);
+/** A Volume's share of an upload's body: its base64 entries. */
+const volumeBytes = (volume) => Object.values(volume.entries).reduce((n, b64) => n + b64.length, 0);
 
 /**
  * Has `sponsor` keep `volumes` for good, paid with work on `chain`, in
- * uploads of about `batchBytes`. Resolves once every one is pinned.
- * `progress({ stored, total })` after each upload.
+ * uploads of at most about `batchBytes` of body. Resolves once every one is
+ * pinned. `progress({ stored, total })` after each upload.
+ *
+ * A sponsor (or the proxy in front of it) sets its own limits: an upload it
+ * finds too large (413, or the connection cut) is sent again in halves, and
+ * one sent too soon (429) again a little later.
  */
-export async function keep(sdk, sponsor, chain, volumes, { batchBytes = 16 << 20, signal, progress = () => {}, pinWait = 120_000 } = {}) {
+export async function keep(sdk, sponsor, chain, volumes, { batchBytes = 1536 << 10, signal, progress = () => {}, pinWait = 120_000 } = {}) {
   const client = new sdk.SponsorClient(sponsor);
   const batches = [];
   for (const volume of volumes) {
@@ -93,27 +98,52 @@ export async function keep(sdk, sponsor, chain, volumes, { batchBytes = 16 << 20
   }
   let stored = 0;
   let token;
-  for (let { volumes: batch } of batches) {
-    while (batch.length > 0) {
-      const root = batch[0].cid;
-      let status;
-      try {
-        status = await client.store(root, batch, signal);
-      } catch (error) {
-        if (!/already uploaded/.test(error?.refusal ?? "")) throw error;
+  const queue = batches.map((b) => b.volumes);
+  for (let wait = 1000; queue.length > 0; ) {
+    const batch = queue.shift();
+    const root = batch[0].cid;
+    let status;
+    try {
+      status = await client.store(root, batch, signal);
+      wait = 1000;
+    } catch (error) {
+      if (/already uploaded/.test(error?.refusal ?? "")) {
         // Someone uploaded this one before (the same file, the same tree):
         // see it kept, and send the rest under another root.
-        status = await client.storeStatus(root, signal);
-        await pay(root, status);
-        batch = batch.slice(1);
+        await pay(root, await statusOf(root));
         stored += 1;
+        if (batch.length > 1) queue.unshift(batch.slice(1));
         continue;
       }
-      await pay(root, status);
-      stored += batch.length;
-      batch = [];
+      const tooLarge = error?.status === 413 || (error?.status === undefined && error instanceof TypeError); // fetch failed: cut off
+      if (tooLarge && batch.length > 1) {
+        const half = Math.ceil(batch.length / 2);
+        queue.unshift(batch.slice(0, half), batch.slice(half));
+        continue;
+      }
+      if (error?.status === 429 || error?.status === 503) {
+        queue.unshift(batch);
+        await pause(wait);
+        wait = Math.min(wait * 2, 30_000);
+        continue;
+      }
+      throw error;
     }
+    await pay(root, status);
+    stored += batch.length;
     progress({ stored, total: volumes.length });
+  }
+
+  /** Where an upload stands, asked again while the sponsor says "slow down". */
+  async function statusOf(root) {
+    for (let wait = 1000; ; wait = Math.min(wait * 2, 30_000)) {
+      try {
+        return await client.storeStatus(root, signal);
+      } catch (error) {
+        if (error?.status !== 429 && error?.status !== 503) throw error;
+        await pause(wait);
+      }
+    }
   }
 
   async function pay(root, status) {
@@ -125,7 +155,7 @@ export async function keep(sdk, sponsor, chain, volumes, { batchBytes = 16 << 20
       }
       token = work.client;
       await earn(sdk, client, work, async () => {
-        status = await client.storeStatus(root, signal);
+        status = await statusOf(root);
         return status.stored || status.credit >= status.bytes;
       }, signal);
     }
@@ -133,7 +163,7 @@ export async function keep(sdk, sponsor, chain, volumes, { batchBytes = 16 << 20
     while (!status.stored) {
       if (Date.now() > deadline) throw new Error(`the sponsor was paid for ${root} but hasn't kept it`);
       await pause(1000);
-      status = await client.storeStatus(root, signal);
+      status = await statusOf(root);
     }
   }
 }
