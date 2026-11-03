@@ -39,6 +39,12 @@ git config trellis.chain Nexus/testnet/trellis
 
 Testnet may be reset; don't keep anything only there.
 
+Clone from a node that keeps the repo's blocks (the sponsor's host keeps
+everything pushed through it). Any node can serve a clone, but one that
+doesn't hold the blocks fetches each from its peers, a few at a time: a
+3,200-object repo clones in about 16 s from the host and about 5 minutes
+through such a node.
+
 Each setting can also come from the environment: `TRELLIS_NODE`,
 `TRELLIS_SPONSOR`, `TRELLIS_KEY`, `TRELLIS_CHAIN` (`Nexus/trellis` by
 default). `trellis.node` may list several nodes, comma-separated: blocks are
@@ -124,6 +130,10 @@ reader clones and fetches (a new commit, an annotated tag) from peers:
 LATTICE=<lattice-node>/.build/debug/lattice \
 LATTICE_SPONSOR=<lattice-sponsor>/.build/debug/lattice-sponsor node e2e/run.mjs
 ```
+
+`E2E_BIG_MB=120` adds a repo of about 120 MiB (3,200 objects over four
+commits), pushed by stock git and cloned through the reader and from the
+host. It passes, with the helper under 760 MB of memory.
 
 It passes on lattice-node `9abd15b` with lattice-sponsor `24d8c4d`.
 

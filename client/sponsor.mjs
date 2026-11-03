@@ -7,6 +7,21 @@
 
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/**
+ * Work from `client`, under `token` if it has one. A sponsor that no longer
+ * knows the token (it restarted) gets a request without one. Undefined when
+ * it is busy: try again in a moment.
+ */
+async function requestWork(client, token, request, signal) {
+  try {
+    return await client.requestWork({ ...(token && { client: token }), ...request }, signal);
+  } catch (error) {
+    if (error?.status === 503) return undefined;
+    if (token && /unknown client token/.test(error?.refusal ?? error?.message ?? "")) return requestWork(client, undefined, request, signal);
+    throw error;
+  }
+}
+
 /** Grinds `work`, posting each share, until `paid(credit)` or the range ends. */
 async function earn(sdk, client, work, paid, signal) {
   for await (const nonce of sdk.grind(work, signal)) {
@@ -31,11 +46,8 @@ export async function sponsored(sdk, sponsor, draft, privateKey, { signal } = {}
   const chain = draft.chainPath.join("/");
   let token;
   for (;;) {
-    let work;
-    try {
-      work = await client.requestWork({ ...(token && { client: token }), chain }, signal);
-    } catch (error) {
-      if (error?.status !== 503) throw error;
+    const work = await requestWork(client, token, { chain }, signal);
+    if (!work) {
       await pause(2000); // busy: a block from now it has work again
       continue;
     }
@@ -106,11 +118,8 @@ export async function keep(sdk, sponsor, chain, volumes, { batchBytes = 16 << 20
 
   async function pay(root, status) {
     while (!status.stored && status.credit < status.bytes) {
-      let work;
-      try {
-        work = await client.requestWork({ ...(token && { client: token }), chain, store: root }, signal);
-      } catch (error) {
-        if (error?.status !== 503) throw error;
+      const work = await requestWork(client, token, { chain, store: root }, signal);
+      if (!work) {
         await pause(2000);
         continue;
       }

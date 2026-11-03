@@ -48,16 +48,21 @@ export function parseAddress(address) {
 function chainAt(urls, chainPath) {
   const transports = urls.map((url) => new sdk.BatchingVolumeTransport(new sdk.HTTPVolumeTransport(`${url}/volumes`, { chainPath })));
   const client = new sdk.VolumeClient(anyHost(transports));
-  // A node may answer 503 while it fetches new content from its peers.
-  // Content is addressed by CID, so asking again is always safe.
+  // A node may answer 503 while it fetches new content from its peers, one
+  // or a few Volumes at a time, so one read can wait behind many others.
+  // Content is addressed by CID, so asking again is always safe; give up only
+  // when no read has succeeded for TRELLIS_READ_SECONDS.
+  const patience = Number(process.env.TRELLIS_READ_SECONDS ?? 120) * 1000;
+  let progress = Date.now();
   const volumes = {
     async get(cid) {
-      const deadline = Date.now() + Number(process.env.TRELLIS_READ_SECONDS ?? 120) * 1000;
       for (let wait = 500; ; wait = Math.min(wait * 2, 5000)) {
         try {
-          return await client.get(cid);
+          const volume = await client.get(cid);
+          progress = Date.now();
+          return volume;
         } catch (error) {
-          if (Date.now() + wait > deadline) throw error;
+          if (Date.now() + wait - progress > patience) throw error;
           await new Promise((resolve) => setTimeout(resolve, wait));
         }
       }

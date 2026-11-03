@@ -298,6 +298,51 @@ try {
   run(tools, "commit", "-q", "--allow-empty", "-m", "by someone else");
   assert.match(gitFails(helperEnv(authorNode, aliceKey), tools, "push", "origin", "main"), /this key is/);
   console.log("git push: a rewrite only with --force; another account's key refused");
+
+  // Optional (E2E_BIG_MB=<n>): a repo of about n MiB, many small files and a
+  // few large ones over several commits, pushed by stock git and cloned
+  // through the reader's node.
+  const bigMiB = Number(process.env.E2E_BIG_MB ?? 0);
+  if (bigMiB > 0) {
+    const large = newRepo(join(work, "large"));
+    let seed = 1;
+    const noise = (bytes) => {
+      const out = Buffer.alloc(bytes);
+      for (let i = 0; i < bytes; i++) out[i] = (seed = (Math.imul(seed, 1103515245) + 12345) >>> 0) >>> 24;
+      return out;
+    };
+    const commits = 4;
+    for (let c = 0; c < commits; c++) {
+      const dir = join(large, `part${c}`);
+      mkdirSync(dir, { recursive: true });
+      // Half the bytes in ~800 small files per commit, half in a few 4 MiB ones.
+      const share = (bigMiB << 20) / commits;
+      for (let i = 0; i < 800; i++) writeFileSync(join(dir, `f${i}.txt`), noise(Math.floor(share / 2 / 800)));
+      for (let i = 0; i * (4 << 20) < share / 2; i++) writeFileSync(join(dir, `blob${i}.bin`), noise(4 << 20));
+      writeFileSync(join(large, "README.md"), `commit ${c}\n`);
+      run(large, "add", "-A");
+      run(large, "commit", "-q", "-m", `part ${c}`);
+    }
+    const objectCount = run(large, "rev-list", "--objects", "--all").split("\n").length;
+    const largeAddress = `trellis::${carol.address}/large`;
+    run(large, "remote", "add", "origin", largeAddress);
+    let started = Date.now();
+    gitWith(helperEnv(authorNode), large, "push", "-q", "origin", "main");
+    const pushSeconds = (Date.now() - started) / 1000;
+    started = Date.now();
+    const largeClone = join(work, "large-clone");
+    gitWith(helperEnv(readerNode), work, "clone", "-q", largeAddress, largeClone);
+    const cloneSeconds = (Date.now() - started) / 1000;
+    // From the host that keeps the blocks: no peer fetches.
+    started = Date.now();
+    gitWith(helperEnv(authorNode), work, "clone", "-q", largeAddress, join(work, "large-clone-host"));
+    const hostSeconds = (Date.now() - started) / 1000;
+    assert.equal(run(join(work, "large-clone-host"), "rev-parse", "HEAD"), run(large, "rev-parse", "HEAD"));
+    assert.equal(run(largeClone, "rev-parse", "HEAD"), run(large, "rev-parse", "HEAD"));
+    run(largeClone, "fsck", "--strict");
+    assert.equal(BigInt((await account(carol.address)).balance ?? 0), 0n, "Carol still has no coins");
+    console.log(`large repo: ${bigMiB} MiB, ${objectCount} objects; push ${pushSeconds}s, clone through the reader ${cloneSeconds}s (it fetches every block from peers), from the host ${hostSeconds}s; fsck clean`);
+  }
   console.log("PASS");
 } finally {
   sponsor?.kill();
