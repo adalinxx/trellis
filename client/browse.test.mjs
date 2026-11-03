@@ -99,6 +99,17 @@ test("trees, files, history and changes read as git reads them, block by block",
   assert.equal((await read.changes(undefined, parent.tree)).length, run(repo, ["ls-tree", "-r", "main~1~1"]).split("\n").length);
 });
 
+test("a pull request's commits and merge base, and whether a branch contains it", async () => {
+  const { repo, known, read } = await sample();
+  const cid = (rev) => known.get(run(repo, ["rev-parse", rev]));
+  const { commits, mergeBase } = await read.compare(cid("main~1"), cid("side"));
+  assert.deepEqual(commits.map((c) => c.id), run(repo, ["rev-list", "main~1..side"]).split("\n"));
+  assert.equal(mergeBase, cid(run(repo, ["merge-base", "main~1", "side"])));
+  assert.equal(await read.contains(cid("main"), cid("side")), true, "merged");
+  assert.equal(await read.contains(cid("main~1"), cid("side")), false, "not yet");
+  assert.deepEqual((await read.compare(cid("main"), cid("side"))).commits, [], "nothing left to merge");
+});
+
 test("a line diff rebuilds the new text, and its hunks are git's", async () => {
   const { repo } = await sample();
   const before = lines(run(repo, ["show", "main~1~1:src/a.txt"]) + "\n");

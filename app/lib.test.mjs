@@ -13,6 +13,12 @@ test("routes round-trip, a ref with slashes as one segment", () => {
     { view: "commits", owner: "bafyreiabc", name: "repo", ref: "v1.0", limit: 60 },
     { view: "commit", owner: "bafyreiabc", name: "repo", cid: "bafyreicommit" },
     { view: "tags", owner: "bafyreiabc", name: "repo" },
+    { view: "issues", owner: "bafyreiabc", name: "repo", closed: true },
+    { view: "pulls", owner: "bafyreiabc", name: "repo", closed: false },
+    { view: "issues-new", owner: "bafyreiabc", name: "repo" },
+    { view: "pulls-new", owner: "bafyreiabc", name: "repo" },
+    { view: "issue", owner: "bafyreiabc", name: "repo", author: "bafyreibob", id: "00ff", tab: "conversation" },
+    { view: "pull", owner: "bafyreiabc", name: "repo", author: "bafyreibob", id: "00ff", tab: "files" },
   ];
   for (const route of routes) assert.deepEqual(parseRoute(href(route)), route);
   assert.deepEqual(parseRoute("#/o/r/tree/main"), { view: "tree", owner: "o", name: "r", ref: "main", path: "" });

@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test --test-concurrency=1 viewer.test.mjs"
+    "test": "node --test --test-concurrency=1 viewer.test.mjs collab.test.mjs"
   },
   "devDependencies": {
     "@playwright/test": "1.48.2"

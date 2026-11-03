@@ -110,7 +110,9 @@ async function* entries(load, node, volume, path) {
 export async function tip(sdk, nodeURL, chainPath, volumes) {
   const url = new URL(`${nodeURL.replace(/\/+$/, "")}/api/block/latest`);
   url.searchParams.set("chainPath", chainPath.join("/"));
-  const response = await fetch(url);
+  // Nodes let the latest block be cached for a few seconds; a reader who
+  // just wrote, or was told of a write, needs the tip as it is now.
+  const response = await fetch(url, { cache: "no-store" });
   if (!response.ok) throw new Error(`latest block: HTTP ${response.status}`);
   const { hash } = await response.json();
   return atBlock(sdk, volumes, hash);

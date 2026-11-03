@@ -176,7 +176,48 @@ export function reader(sdk, load) {
     return out.sort((x, y) => (x.path < y.path ? -1 : x.path > y.path ? 1 : 0));
   }
 
-  return { object, commit, peel, tree, size, blob, at, history, changes };
+  /** The CIDs of `from` and its ancestors, at most `limit` of them. */
+  async function ancestors(from, limit) {
+    const seen = new Set([from]);
+    let frontier = [from];
+    while (frontier.length > 0 && seen.size < limit) {
+      const parents = (await Promise.all(frontier.map(commit))).flatMap((c) => c.parents).filter((p) => !seen.has(p));
+      parents.forEach((p) => seen.add(p));
+      frontier = [...new Set(parents)];
+    }
+    return seen;
+  }
+
+  /**
+   * A pull request's commits: those reachable from `head` but not from
+   * `base` (looking `limit` commits back from each), newest first, and the
+   * newest commit they share (their merge base), or undefined.
+   */
+  async function compare(base, head, limit = 2000) {
+    const onBase = await ancestors(base, limit);
+    const seen = new Set([head]);
+    let queue = [await commit(head)];
+    const commits = [];
+    let mergeBase;
+    while (queue.length > 0 && commits.length < limit) {
+      queue.sort((a, b) => b.committer.time - a.committer.time);
+      const next = queue.shift();
+      if (onBase.has(next.cid)) {
+        mergeBase ??= next.cid;
+        continue;
+      }
+      commits.push(next);
+      const parents = next.parents.filter((p) => !seen.has(p));
+      parents.forEach((p) => seen.add(p));
+      queue.push(...(await Promise.all(parents.map(commit))));
+    }
+    return { commits, mergeBase };
+  }
+
+  /** Whether `target` is `from` or one of its ancestors, looking `limit` commits back. */
+  const contains = async (from, target, limit = 2000) => (await ancestors(from, limit)).has(target);
+
+  return { object, commit, peel, tree, size, blob, at, history, changes, ancestors, compare, contains };
 }
 
 /** Whether bytes look like text: no NUL in the first 8000, as git decides. */

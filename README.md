@@ -7,8 +7,10 @@ and serve. No coins are needed: a sponsor pays each write's fee and keeps each
 push's objects in return for a moment of the pusher's work.
 
 Stock git pushes and clones through `git-remote-trellis`, and `trellis
-import` brings a repo from GitHub. The web viewer (`app/`) browses any
-repo in the browser. Issues and pull requests come next.
+import` brings a repo from GitHub. The web page (`app/`) browses any repo,
+and there anyone can fork, open issues and pull requests, review a pull
+request line by line, and write releases, signing with
+[Selfhold](https://github.com/adalinxx/selfhold-wallet) and with no coins.
 
 ## Use
 
@@ -66,6 +68,26 @@ on a clone. The fonts ship with the page.
 python3 -m http.server 8791   # from the repository root, then open http://127.0.0.1:8791/app/
 ```
 
+### Issues, pull requests, reviews, releases
+
+Sign in on the page with Selfhold: its window makes an account with a
+passkey and approves each write, and the sponsor in Settings takes the
+device's work for each fee, so taking part needs no coins.
+
+- **Fork** writes your card and copies the repo's refs. The blocks are the
+  original's, so nothing is uploaded.
+- **Issues**: open, comment, close and reopen. The author and the repo's
+  maintainers (its owner and the delegates its card names) can close one;
+  maintainers label them.
+- **Pull requests** merge a branch of any copy of the repo (yours, or
+  someone's fork) into one of its branches. The page shows its commits and
+  its changes from the merge base, and anyone signed in can comment on any
+  line. A maintainer merges by pushing (the page shows how); once the base
+  branch contains the head's commit, the page shows it as merged. No record
+  says so.
+- **Releases**: a maintainer writes notes for a tag; they show on the Tags
+  page.
+
 ### Bring a repo from GitHub
 
 ```sh
@@ -117,6 +139,21 @@ lattice child create Nexus/trellis --spec chain/spec.json \
 `client/records.mjs` builds and reads them. A change names the value it
 replaces, so two pushes to one ref can't both apply.
 
+Collaboration, `client/collab.mjs`:
+
+| Key | Value |
+| --- | --- |
+| `user/<a>/issue/<id>` | `{ repo: "<owner>/<name>", title, body, time, state?, updated?, head?, base? }`: an issue; with `head: "<a>/<name>:<branch>"` and `base: "<branch>"`, a pull request |
+| `index/issue/<owner>/<name>/<id>/<a>` | `"1"`: lists it under the repo |
+| `user/<a>/post/<id>` | `{ on: "<author>/<id>", body, time, review? }`: a comment; `review: { commit, path, line, side }` puts it on a line of a pull request's changes at that head commit |
+| `index/post/<author>/<id>/<post id>/<a>` | `"1"`: lists it under the issue |
+| `user/<m>/triage/<owner>/<name>/<author>/<id>` | `{ state?, labels?, time }`: a maintainer closes, reopens or labels it |
+| `user/<m>/release/<name>/<tag>` | `{ title?, notes, time }`: a maintainer's release notes for a tag |
+
+An issue's state is the latest word on it, its author's or a maintainer's;
+its labels, the latest maintainer's to label it. Records from anyone else
+are ignored. Times are each writer's own claim.
+
 ## Objects
 
 Repositories are SHA-256 (`git init --object-format=sha256`). Each git object
@@ -143,8 +180,9 @@ history; a clone recomputes it and refuses a block whose claim is wrong.
 - `client/git.mjs`: a local repository through the `git` command (Node).
 - `client/remote.mjs`: the git remote helper (`bin/git-remote-trellis`).
 - `client/import.mjs`: `trellis import` (`bin/trellis`).
-- `client/browse.mjs`: what the viewer reads (commits, trees, files,
-  history, changes) and its line diff (Myers', with git's hunks).
+- `client/browse.mjs`: what the page reads (commits, trees, files,
+  history, changes, a pull request's commits and merge base) and its line
+  diff (Myers', with git's hunks).
 
 ## No coins
 
@@ -181,14 +219,22 @@ host. It passes, with the helper under 760 MB of memory.
 
 It passes on lattice-node `9abd15b` with lattice-sponsor `24d8c4d`.
 
-The viewer's test drives `app/` in headless Chromium (Playwright) against the
-same private stack (`e2e/stack.mjs`): a repo pushed by stock git with no
-coins, then its list, files, README, history, diffs, branches, tags, a large
-file read only when asked, and a node that can't serve the chain:
+The page's tests drive `app/` in headless Chromium (Playwright) against the
+same private stack (`e2e/stack.mjs`). `viewer.test.mjs`: a repo pushed by
+stock git with no coins, then its list, files, README, history, diffs,
+branches, tags, a large file read only when asked, and a node that can't
+serve the chain. `collab.test.mjs`, with Selfhold's window built from
+selfhold-wallet and a passkey from Chromium's virtual authenticator: a
+coinless person signs in and forks; opens an issue that the owner (signing
+with a key file) labels and closes, comments, and reopens it; declines a
+write, which isn't sent; opens a pull request from someone else's fork,
+comments on a line of its changes, and sees it merged once the owner
+pushes the merge; and writes a release on their fork.
 
 ```sh
 cd e2e/ui && npm ci && npx playwright install chromium
-LATTICE=<lattice-node>/.build/debug/lattice npm test
+LATTICE=<lattice-node>/.build/debug/lattice \
+LATTICE_WALLET_WEB=<selfhold-wallet>/dist-web npm test
 ```
 
 The policy's own tests:

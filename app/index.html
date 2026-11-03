@@ -127,6 +127,53 @@ table.code tbody { display: table; width: 100%; }
 .diff .counts { margin-left: auto; font-weight: 400; }
 .note { margin: 0; padding: 10px 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); font-size: 13px; }
 .loading { margin-top: 16px; }
+#who { display: flex; gap: 8px; align-items: center; font-size: 14px; }
+#who .me { text-decoration: none; font-family: var(--mono); font-size: 12.5px; }
+#notices { display: grid; gap: 8px; margin-top: 12px; } #notices:empty { display: none; }
+.notice { display: flex; gap: 10px; padding: 10px 12px; border-radius: 8px; background: var(--del); border: 1px solid var(--line); font-size: 13.5px; }
+.notice p { margin: 0; flex: 1; } .notice .close { border: 0; background: none; cursor: pointer; color: var(--muted); font-size: 18px; line-height: 1; }
+.repo-head { position: relative; } .head-acts { position: absolute; right: 0; top: 4px; }
+.fork-of { margin: 0; font-size: 13px; color: var(--muted); } .fork-of a { color: var(--accent); }
+.bar.between { justify-content: space-between; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; background: var(--surface); }
+.seg a { padding: 5px 12px; text-decoration: none; font-size: 14px; color: var(--muted); } .seg a + a { border-left: 1px solid var(--line); }
+.seg a[aria-current="page"] { background: var(--accent-soft); color: var(--ink); font-weight: 600; }
+.issues { list-style: none; margin: 0; padding: 0; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+.issue-row { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; padding: 10px 14px; border-top: 1px solid var(--line); }
+.issue-row:first-child { border-top: 0; }
+.issue-row .muted { flex-basis: 100%; font-size: 13px; padding-left: 0; }
+.issue-title { font-weight: 600; text-decoration: none; overflow-wrap: anywhere; } .issue-title:hover { color: var(--accent); }
+.label { display: inline-block; font-size: 12px; padding: 0 8px; border-radius: 999px; background: var(--accent-soft); color: var(--ink); border: 1px solid var(--line); margin-right: 4px; }
+.state { display: inline-block; font-size: 12px; font-weight: 600; padding: 1px 9px; border-radius: 999px; color: var(--on-accent); background: var(--accent); }
+.state.closed { background: var(--muted); } .state.merged { background: #6b4fa0; }
+.issue-head h2 { font-size: 24px; margin: 4px 0; overflow-wrap: anywhere; } .issue-head .id { font: 400 18px var(--body); }
+.issue-head p { margin: 4px 0 8px; font-size: 14px; color: var(--muted); } .issue-head a { color: var(--accent); }
+.labels { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+.edit-labels summary, .write-release summary, details.merge summary { cursor: pointer; font-size: 13px; color: var(--muted); }
+.edit-labels input { min-width: 260px; }
+.tabs.sub { margin-top: 0; }
+.comment { border: 1px solid var(--line); border-radius: 10px; background: var(--surface); margin-top: 12px; overflow: hidden; }
+.comment header { padding: 8px 14px; background: var(--bg); border-bottom: 1px solid var(--line); font-size: 13.5px; }
+.comment header a { text-decoration: none; font-weight: 600; } .comment header a:hover { color: var(--accent); }
+.comment .markdown { padding: 4px 14px; }
+.event { margin: 12px 0 0 14px; font-size: 13.5px; color: var(--muted); } .event.merged { color: #6b4fa0; font-weight: 600; }
+details.merge { margin-top: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); padding: 10px 14px; }
+.comment-form { margin-top: 16px; }
+textarea { width: 100%; min-height: 110px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); font: inherit; resize: vertical; }
+.panel textarea { background: var(--bg); }
+.panel label, .comment-form label { color: var(--muted); }
+.panel label input, .panel label select, .panel label textarea { display: block; margin-top: 4px; width: 100%; color: var(--ink); }
+.pick { display: flex; gap: 12px; flex-wrap: wrap; } .pick label { flex: 1; min-width: 200px; }
+.panel.quiet p { margin: 0 0 12px; color: var(--muted); }
+.status { font-size: 12.5px; color: var(--muted); margin-right: auto; align-self: center; } .status.bad { color: var(--down); }
+.code .gutter { position: relative; }
+.code .plus { visibility: hidden; position: absolute; right: -10px; top: 1px; z-index: 1; border: 0; border-radius: 4px; background: var(--accent); color: var(--on-accent); width: 18px; height: 18px; line-height: 18px; padding: 0; cursor: pointer; font: 600 13px var(--body); }
+.code tr:hover .plus, .code .plus:focus-visible { visibility: visible; }
+.code tr.review-row td, .code tr.inline-comment td { white-space: normal; padding: 8px 12px; background: var(--bg); font-family: var(--body); font-size: 14px; }
+.code tr.inline-comment .comment { margin: 0; }
+.release { grid-column: 1 / -1; margin-top: 8px; padding: 8px 12px; border-left: 3px solid var(--accent); background: var(--bg); border-radius: 0 6px 6px 0; }
+.release h3 { margin: 0; font: 600 15px var(--display); } .release .small { font-size: 12.5px; margin: 4px 0 0; }
+.write-release { grid-column: 1 / -1; margin-top: 6px; } .write-release label { display: block; } .write-release input, .write-release textarea { width: 100%; margin-top: 4px; }
 @media (max-width: 600px) { h1 { font-size: 22px; } .latest .count { margin-left: 0; } }
 </style>
 </head>
@@ -135,7 +182,9 @@ table.code tbody { display: table; width: 100%; }
   <header class="top">
     <a class="brand" href="#/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 21L21 3M3 13L13 3M11 21L21 11M3 3l18 18M3 11l10 10M11 3l10 10"/></svg>Trellis</a>
     <nav><a href="#/settings">Settings</a></nav>
+    <div id="who"></div>
   </header>
+  <div id="notices"></div>
   <main aria-live="polite"></main>
 </div>
 <script type="module" src="./app.js"></script>

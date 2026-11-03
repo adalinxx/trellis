@@ -1,16 +1,38 @@
 // Trellis in the browser: a repo's branches from the chain's state, its code
 // from Lattice content, one block at a time, only the blocks a page shows.
 // Every block is checked against its CID, so the node is trusted to serve
-// the code, never to serve it correctly. No server of its own.
+// the code, never to serve it correctly. Issues, pull requests, comments,
+// line reviews, labels and releases are records the reader writes through
+// Selfhold, which holds their key; a sponsor takes this device's work for
+// each fee, so taking part needs no coins. No server of its own.
 import * as sdk from "../vendor/lattice-sdk.js";
 import * as records from "../client/records.mjs";
 import { tip, view, volumeLoader } from "../client/state.mjs";
 import { hunks, isText, lineDiff, lines, reader } from "../client/browse.mjs";
+import * as collab from "../client/collab.mjs";
+import { changes } from "../client/write.mjs";
+import { selfhold } from "./vendor/selfhold.mjs";
 import { Marked } from "./vendor/marked.esm.js";
 import { ago, bytes, defaultBranch, esc, fullRef, href, imageType, linkTarget, parseRoute, shortAccount, shortRef, subject } from "./lib.mjs";
 
 const $ = (s) => document.querySelector(s);
-const DEFAULTS = { node: "https://lattice-testnet-apps-iad.fly.dev", chain: "Nexus/testnet/trellis" };
+const DEFAULTS = {
+  node: "https://lattice-testnet-apps-iad.fly.dev",
+  chain: "Nexus/testnet/trellis",
+  // Takes this device's work for each write's fee.
+  sponsor: "https://lattice-testnet-apps-iad.fly.dev:8650/sponsor",
+};
+// Selfhold's window. A page served on this computer may use one served on
+// this computer too (the tests do); never any other: the window keeps the account.
+const WALLET_PAGE = "https://wallet.selfhold.app/";
+const local = (host) => host === "localhost" || host === "127.0.0.1";
+function walletPage(asked) {
+  try {
+    const url = new URL(asked);
+    if (url.protocol === "http:" && local(url.hostname) && local(location.hostname) && !url.username && !url.password) return url.href;
+  } catch {}
+  return WALLET_PAGE;
+}
 // The largest file shown without asking, and the largest diffed.
 const SHOW_BYTES = 2 << 20;
 const DIFF_BYTES = 512 << 10;
@@ -28,11 +50,13 @@ const save = (key, value) => {
     else localStorage.removeItem(`trellis:${key}`);
   } catch {}
 };
-// ?node= and ?chain= on the page's URL win over what Settings saved.
+// ?node=, ?chain= and ?sponsor= on the page's URL win over what Settings saved.
 const query = new URLSearchParams(location.search);
 const settings = {
   node: (query.get("node") || saved("node") || DEFAULTS.node).replace(/\/+$/, ""),
   chain: query.get("chain") || saved("chain") || DEFAULTS.chain,
+  sponsor: query.get("sponsor") ?? saved("sponsor") ?? DEFAULTS.sponsor,
+  wallet: walletPage(query.get("wallet") ?? WALLET_PAGE),
 };
 
 // The chain, as the node in Settings serves it.
@@ -54,15 +78,21 @@ function connect() {
     },
   };
   const read = reader(sdk, async (cid) => (await volumes.get(cid)).bytes(cid));
+  // Trie nodes are named by their CIDs, so one cache serves every tip: a
+  // newer state costs only the nodes that changed.
+  const load = volumeLoader(volumes, sdk.decodeDagCbor);
   let current;
   chain = {
     read,
-    // The state at the node's tip, read again when over 10 s old.
+    path: chainPath,
+    /** Forget the state read, so the next read is at the node's new tip. */
+    stale: () => (current = undefined),
+    // The state at the node's tip, read again when over 3 s old.
     async state() {
-      if (!current || Date.now() - current.at > 10_000) {
+      if (!current || Date.now() - current.at > 3_000) {
         current = (async () => {
           const { generalStateCID } = await tip(sdk, settings.node, chainPath, volumes);
-          return view(volumeLoader(volumes, sdk.decodeDagCbor), generalStateCID);
+          return view(load, generalStateCID);
         })();
         current.at = Date.now();
         current.catch(() => (current = undefined));
@@ -72,6 +102,63 @@ function connect() {
   };
 }
 connect();
+
+// ---- The reader's account ----
+
+// Selfhold holds the key and asks the reader to approve every write; the
+// sponsor in Settings takes this device's work for its fee.
+const wallet = selfhold({ use: "window", wallet: settings.wallet, hosts: () => [settings.node], sponsor: () => settings.sponsor || undefined });
+let me = null;
+
+function renderWho() {
+  $("#who").innerHTML = me
+    ? `<a class="me" href="${href({ view: "owner", owner: me })}" title="${esc(me)}">${esc(shortAccount(me))}</a><button class="btn small" data-act="signout">Sign out</button>`
+    : `<button class="btn small primary" data-act="signin">Sign in</button>`;
+}
+
+/** Asks Selfhold for this site's account. Its window opens only from a click: call it before any other wait. */
+async function signIn() {
+  me = await wallet.connect();
+  renderWho();
+  render();
+}
+
+/** What went wrong, in the page's words. */
+function walletMessage(error) {
+  const text = String(error?.message ?? error);
+  if (error?.code === "NeedsCoins") {
+    const why = { down: "the sponsor isn't answering", dear: "this device can't do the fee's work in reasonable time", most: "the sponsor pays only so much for one write" }[error.sponsor];
+    return `This write's fee couldn't be paid with work (${why ?? (settings.sponsor ? "the sponsor didn't pay it" : "no sponsor is set in Settings")}). Try again in a few minutes, or send coins to ${shortAccount(error.address ?? me ?? "")}.`;
+  }
+  if (/just declined|ask again in a moment/i.test(text)) return "Selfhold waits a few seconds after a decline. Try again in a moment.";
+  if (/declined|rejected|denied/i.test(text)) return "You declined it in Selfhold. Nothing was sent.";
+  return text;
+}
+
+/**
+ * Writes the records `build(state)` returns, as the reader, through
+ * Selfhold's window, which opens at once (call this from a click, before any
+ * other wait) while the page reads the chain. Resolves once the write has
+ * landed. `status(text)` hears progress.
+ */
+async function send(build, status = () => {}) {
+  if (!me) throw new Error("Sign in first.");
+  const request = (async () => {
+    chain.stale();
+    const state = await chain.state();
+    const actions = await changes(state, await build(state));
+    return actions.length ? { chainPath: chain.path, actions } : null;
+  })();
+  status("Approve it in Selfhold's window…");
+  const sent = await wallet.writeRecords(request, { account: me, progress: (text) => status(`${text.replace(/[.…]+$/, "")}…`) });
+  if (sent) {
+    status("Sent. Waiting for its block…");
+    await sent.wait();
+  }
+  chain.stale();
+}
+
+const time = () => Math.floor(Date.now() / 1000);
 
 // ---- Rendering ----
 
@@ -157,13 +244,17 @@ async function repoOf(owner, name) {
 function repoHead({ owner, name }, card, tab, ref) {
   const tabs = [
     ["code", "Code", href({ view: "code", owner, name })],
+    ["issues", "Issues", href({ view: "issues", owner, name })],
+    ["pulls", "Pull requests", href({ view: "pulls", owner, name })],
     ["commits", "Commits", href({ view: "commits", owner, name, ref: ref ?? "HEAD" })],
     ["branches", "Branches", href({ view: "branches", owner, name })],
     ["tags", "Tags", href({ view: "tags", owner, name })],
   ];
-  return `<div class="repo-head">
+  const fork = card?.forkOf ? `<p class="fork-of">Forked from <a href="${href({ view: "code", ...collab.repoOf(card.forkOf) })}">${esc(shortAccount(collab.repoOf(card.forkOf).owner))}/${esc(collab.repoOf(card.forkOf).name)}</a></p>` : "";
+  const forkButton = me && me !== owner ? `<button class="btn small" data-act="fork">Fork</button>` : "";
+  return `<div class="repo-head">${forkButton ? `<div class="head-acts">${forkButton}</div>` : ""}
       <h1><a href="${href({ view: "owner", owner })}" class="owner" title="${esc(owner)}">${esc(shortAccount(owner))}</a> <span class="muted">/</span> <a href="${href({ view: "code", owner, name })}">${esc(name)}</a></h1>
-      ${card?.description ? `<p class="lede">${esc(card.description)}</p>` : ""}
+      ${fork}${card?.description ? `<p class="lede">${esc(card.description)}</p>` : ""}
     </div>
     <nav class="tabs" aria-label="Repository">${tabs.map(([key, label, link]) => `<a class="tab" href="${link}" ${key === tab ? 'aria-current="page"' : ""}>${label}</a>`).join("")}</nav>`;
 }
@@ -202,8 +293,10 @@ async function repoPage(route, show) {
   const { card, refs } = await repoOf(route.owner, route.name);
   if (!card && refs.size === 0) return `<h1>Not found</h1><p class="empty">${esc(shortAccount(route.owner))} has no repository called ${esc(route.name)} on ${esc(settings.chain)}.</p>`;
   const head = (tab, ref) => repoHead(route, card, tab, ref);
+  const talk = { issues: "issues", "issues-new": "issues", pulls: "pulls", "pulls-new": "pulls", issue: "issues", pull: "pulls" }[route.view];
+  if (talk) return head(talk) + (await talkPage(route, card, refs));
   if (refs.size === 0) return `${head("code")}<p class="empty">Nothing has been pushed yet.</p>${cloneBox(route)}`;
-  if (route.view === "branches" || route.view === "tags") return head(route.view) + (await refList(route, refs));
+  if (route.view === "branches" || route.view === "tags") return head(route.view) + (await refList(route, card, refs));
   if (route.view === "commit") return head("commits") + (await commitPage(route));
 
   const at = await resolve(refs, route.ref);
@@ -316,7 +409,7 @@ async function commitPage(route) {
     ${files.map((f) => f.html).join("")}`;
 }
 
-async function fileDiff(route, commit, { path, status, before, after }) {
+async function fileDiff(route, commit, { path, status, before, after }, review) {
   const title = `<a href="${href({ view: status === "deleted" ? "blob" : "blob", owner: route.owner, name: route.name, ref: status === "deleted" ? commit.parents[0] : commit.cid, path })}">${esc(path)}</a>`;
   const label = { added: "added", deleted: "deleted", modified: "" }[status];
   const wrap = (inner, added = 0, removed = 0) => ({ added, removed, html: `<section class="diff" data-path="${esc(path)}"><h3>${title} ${label ? `<span class="badge">${label}</span>` : ""}<span class="counts"><span class="add">+${added}</span> <span class="del">−${removed}</span></span></h3>${inner}</section>` });
@@ -333,20 +426,39 @@ async function fileDiff(route, commit, { path, status, before, after }) {
   const added = edit.filter((s) => s.op === "+").length;
   const removed = edit.filter((s) => s.op === "-").length;
   if (shown.length === 0) return wrap(`<p class="muted note">${before?.mode !== after?.mode ? `Mode ${esc(before?.mode)} → ${esc(after?.mode)}` : "No change in the text."}</p>`);
-  const rows = shown.map((h) => `<tr class="hunk"><td colspan="3">@@ −${h.a},${h.aLines} +${h.b},${h.bLines} @@</td></tr>${h.steps.map((s) => `<tr class="${s.op === "+" ? "add" : s.op === "-" ? "del" : ""}"><td class="ln" data-n="${s.a ?? ""}"></td><td class="ln" data-n="${s.b ?? ""}"></td><td class="src"><span class="op">${s.op}</span>${esc(s.line)}</td></tr>`).join("")}`);
+  // In a pull request: a + to comment on each line, and the comments made on them.
+  const line = (s) => {
+    const side = s.op === "-" ? "old" : "new";
+    const n = side === "old" ? s.a : s.b;
+    const here = review ? review.reviews.filter((c) => c.review.path === path && c.review.side === side && c.review.line === n) : [];
+    const plus = review && me ? `<button class="plus" data-act="review" data-path="${esc(path)}" data-line="${n}" data-side="${side}" aria-label="Comment on line ${n}">+</button>` : "";
+    const row = `<tr class="${s.op === "+" ? "add" : s.op === "-" ? "del" : ""}"><td class="ln" data-n="${s.a ?? ""}"></td><td class="ln gutter" data-n="${s.b ?? ""}">${plus}</td><td class="src"><span class="op">${s.op}</span>${esc(s.line)}</td></tr>`;
+    return row + here.map((c) => `<tr class="inline-comment"><td colspan="3">${commentCard(route, c.by, c.time, c.body)}</td></tr>`).join("");
+  };
+  const rows = shown.map((h) => `<tr class="hunk"><td colspan="3">@@ −${h.a},${h.aLines} +${h.b},${h.bLines} @@</td></tr>${h.steps.map(line).join("")}`);
   return wrap(`<table class="code diff-table"><tbody>${rows.join("")}</tbody></table>`, added, removed);
 }
 
-async function refList(route, refs) {
+async function refList(route, card, refs) {
   const kind = route.view === "branches" ? "refs/heads/" : "refs/tags/";
   const names = [...refs.keys()].filter((r) => r.startsWith(kind)).sort(byVersion);
   if (names.length === 0) return `<p class="empty">No ${route.view}.</p>`;
+  const tagsPage = route.view === "tags";
+  const notes = tagsPage ? await collab.releases(await chain.state(), route.owner, route.name, card) : new Map();
+  const canRelease = tagsPage && me && collab.maintainers(route.owner, card).includes(me);
   const rows = await Promise.all(names.map(async (r) => {
     const { commit, tags } = await chain.read.peel(refs.get(r));
     const c = await chain.read.commit(commit);
     const note = tags[0]?.message ? ` · ${esc(subject(tags[0].message).subject)}` : "";
-    return `<li class="ref-row"><a class="ref-name" href="${href({ view: "tree", owner: route.owner, name: route.name, ref: shortRef(r), path: "" })}">${esc(shortRef(r))}</a>
-      <span class="muted">${esc(subject(c.message).subject)} · ${esc(ago(c.committer.time))}${note}</span><span class="mono id">${esc(c.id.slice(0, 10))}</span></li>`;
+    const tag = shortRef(r);
+    const rel = notes.get(tag);
+    const release = rel ? `<div class="release"><h3>${esc(rel.title || tag)}</h3><div class="markdown">${markdown(rel.notes, route, tag, "")}</div><p class="muted small">Released by ${byline(rel.by)} ${esc(ago(rel.time))}</p></div>` : "";
+    const write = canRelease ? `<details class="write-release"><summary>${rel ? "Edit the release" : "Write release notes"}</summary>
+        <form data-form="release" data-tag="${esc(tag)}"><label>Title<input type="text" name="title" value="${esc(rel?.title ?? "")}"></label>
+        <label>Notes<textarea name="notes" required>${esc(rel?.notes ?? "")}</textarea></label>
+        <div class="row2"><span class="status"></span><button class="btn primary">Save the release</button></div></form></details>` : "";
+    return `<li class="ref-row"><a class="ref-name" href="${href({ view: "tree", owner: route.owner, name: route.name, ref: tag, path: "" })}">${esc(tag)}</a>
+      <span class="muted">${esc(subject(c.message).subject)} · ${esc(ago(c.committer.time))}${note}</span><span class="mono id">${esc(c.id.slice(0, 10))}</span>${release}${write}</li>`;
   }));
   return `<ul class="refs">${rows.join("")}</ul>`;
 }
@@ -382,8 +494,141 @@ function settingsPage() {
       <label for="node">Node</label><input type="url" id="node" value="${esc(settings.node)}" required>
       <p class="hint">Any Lattice node serving the chain's public reads. Every block it serves is checked against its CID.</p>
       <label for="chain">Chain</label><input type="text" id="chain" value="${esc(settings.chain)}" required>
+      <label for="sponsor">Sponsor</label><input type="url" id="sponsor" value="${esc(settings.sponsor)}">
+      <p class="hint">Takes this device's work for each write's fee, so writing needs no coins. Empty: fees are paid in coins.</p>
       <div class="row2"><button type="button" class="btn" data-act="defaults">Defaults</button><button class="btn primary">Save</button></div>
     </form>`;
+}
+
+// ---- Issues and pull requests ----
+
+const who = (a) => (a === me ? "you" : shortAccount(a));
+const byline = (a) => `<a class="author" href="${href({ view: "owner", owner: a })}" title="${esc(a)}">${esc(who(a))}</a>`;
+const chips = (labels) => labels.map((l) => `<span class="label">${esc(l)}</span>`).join("");
+const signInFirst = (what) => `<div class="panel quiet"><p>Sign in to ${what}. Selfhold makes your account with a passkey; no coins needed.</p><button class="btn primary" data-act="signin">Sign in</button></div>`;
+
+async function talkPage(route, card, refs) {
+  const state = await chain.state();
+  if (route.view === "issues" || route.view === "pulls") return issueList(route, state, card, refs);
+  if (route.view === "issues-new") return me ? issueForm(route) : signInFirst("open an issue");
+  if (route.view === "pulls-new") return me ? pullForm(route, state, refs) : signInFirst("open a pull request");
+  return issuePage(route, state, card, refs);
+}
+
+/** A pull request's head and base commits as the chain names them now, and whether the base contains the head. */
+async function pullStatus(state, pr, refs, limit = 2000) {
+  const h = collab.headOf(pr.head);
+  const headRefs = h.owner === pr.repo.split("/")[0] && h.name === pr.repo.split("/")[1] ? refs : await records.refs(sdk, state, h.owner, h.name);
+  const baseRef = refs.get(`refs/heads/${pr.base}`);
+  const headRef = headRefs.get(`refs/heads/${h.branch}`);
+  const baseCommit = baseRef && (await chain.read.peel(baseRef)).commit;
+  const headCommit = headRef && (await chain.read.peel(headRef)).commit;
+  const merged = Boolean(baseCommit && headCommit && (await chain.read.contains(baseCommit, headCommit, limit)));
+  return { baseCommit, headCommit, merged, state: merged ? "merged" : pr.state };
+}
+
+const stateBadge = (state) => `<span class="state ${state}">${{ open: "Open", closed: "Closed", merged: "Merged" }[state]}</span>`;
+
+async function issueList(route, state, card, refs) {
+  const pulls = route.view === "pulls";
+  const all = (await collab.issues(state, route.owner, route.name, card)).filter((i) => Boolean(i.head) === pulls);
+  // A merged pull request is done, whatever its record says.
+  const shown = await Promise.all(all.map(async (i) => ({ ...i, state: pulls && i.state === "open" ? (await pullStatus(state, i, refs, 500).catch(() => ({ state: "open" }))).state : i.state })));
+  const open = shown.filter((i) => i.state === "open");
+  const done = shown.filter((i) => i.state !== "open");
+  const list = route.closed ? done : open;
+  const kind = pulls ? "pull requests" : "issues";
+  const rows = list.map((i) => `<li class="issue-row">${stateBadge(i.state)}
+      <a class="issue-title" href="${href({ view: pulls ? "pull" : "issue", owner: route.owner, name: route.name, author: i.author, id: i.id })}">${esc(i.title)}</a>${chips(i.labels)}
+      <span class="muted">opened ${esc(ago(i.time))} by ${byline(i.author)}${pulls ? ` · ${esc(i.head.replace(/^[^/]+/, (o) => shortAccount(o)))} → ${esc(i.base)}` : ""}</span></li>`);
+  return `<div class="bar between"><nav class="seg" aria-label="State">
+      <a href="${href({ view: route.view, owner: route.owner, name: route.name })}" ${route.closed ? "" : 'aria-current="page"'}>${open.length} open</a>
+      <a href="${href({ view: route.view, owner: route.owner, name: route.name, closed: true })}" ${route.closed ? 'aria-current="page"' : ""}>${done.length} ${pulls ? "closed or merged" : "closed"}</a></nav>
+      <a class="btn primary" href="${href({ view: `${route.view}-new`, owner: route.owner, name: route.name })}">New ${pulls ? "pull request" : "issue"}</a></div>
+    ${rows.length ? `<ul class="issues">${rows.join("")}</ul>` : `<p class="empty">No ${route.closed ? (pulls ? "closed or merged" : "closed") : "open"} ${kind}.</p>`}`;
+}
+
+function issueForm(route) {
+  return `<form class="panel" data-form="issue"><h2>New issue</h2>
+    <label>Title<input type="text" name="title" required maxlength="300"></label>
+    <label>Description<textarea name="body" maxlength="65536" placeholder="Markdown"></textarea></label>
+    <div class="row2"><span class="status"></span><button class="btn primary">Open the issue</button></div></form>`;
+}
+
+async function pullForm(route, state, refs) {
+  // Heads: the branches of every copy of this repo, forks included.
+  const owners = [...new Set([route.owner, ...(await records.owners(state, route.name))])];
+  const heads = [];
+  for (const owner of owners) {
+    const theirs = owner === route.owner ? refs : await records.refs(sdk, state, owner, route.name);
+    for (const ref of [...theirs.keys()].filter((r) => r.startsWith("refs/heads/")).sort(byVersion)) heads.push(`${owner}/${route.name}:${shortRef(ref)}`);
+  }
+  const bases = [...refs.keys()].filter((r) => r.startsWith("refs/heads/")).map(shortRef).sort(byVersion);
+  const base = shortRef(defaultBranch(refs) ?? "");
+  const label = (h) => h.replace(/^[^/]+/, (o) => (o === me ? "you" : shortAccount(o)));
+  const mine = heads.find((h) => h.startsWith(`${me}/`) && !h.endsWith(`:${base}`)) ?? heads.find((h) => !h.startsWith(`${route.owner}/`)) ?? heads[0];
+  if (!bases.length) return `<p class="empty">This repository has no branch to merge into yet.</p>`;
+  return `<form class="panel" data-form="pull"><h2>New pull request</h2>
+    <p class="hint">Push your branch to your copy of this repo (git push trellis::&lt;you&gt;/${esc(route.name)}), then choose it here.</p>
+    <div class="pick"><label>Merge<select name="head">${heads.map((h) => `<option value="${esc(h)}" ${h === mine ? "selected" : ""}>${esc(label(h))}</option>`).join("")}</select></label>
+    <label>into<select name="base">${bases.map((b) => `<option ${b === base ? "selected" : ""}>${esc(b)}</option>`).join("")}</select></label></div>
+    <label>Title<input type="text" name="title" required maxlength="300"></label>
+    <label>Description<textarea name="body" maxlength="65536" placeholder="Markdown"></textarea></label>
+    <div class="row2"><span class="status"></span><button class="btn primary">Open the pull request</button></div></form>`;
+}
+
+async function issuePage(route, state, card, refs) {
+  const issue = await collab.oneIssue(state, route.owner, route.name, card, route.author, route.id);
+  if (!issue) return `<p class="empty">No such ${route.view === "pull" ? "pull request" : "issue"}.</p>`;
+  const pr = Boolean(issue.head);
+  const comments = await collab.posts(state, route.author, route.id);
+  const status = pr ? await pullStatus(state, issue, refs) : { state: issue.state };
+  const compared = pr && status.baseCommit && status.headCommit ? await chain.read.compare(status.baseCommit, status.headCommit) : undefined;
+  const isMaintainer = me && collab.maintainers(route.owner, card).includes(me);
+  const self = { view: route.view, owner: route.owner, name: route.name, author: route.author, id: route.id };
+  const head = collab.headOf(issue.head ?? "");
+  const top = `<div class="issue-head"><h2>${esc(issue.title)} <span class="muted id">#${esc(issue.id.slice(0, 7))}</span></h2>
+    <p>${stateBadge(status.state)} ${byline(issue.author)} opened this ${esc(ago(issue.time))}${pr ? ` · wants to merge ${compared ? `${compared.commits.length} commit${compared.commits.length === 1 ? "" : "s"}` : "a branch"} into <code>${esc(issue.base)}</code> from <a href="${href({ view: "tree", owner: head.owner, name: head.name, ref: head.branch, path: "" })}"><code>${esc(label(issue.head))}</code></a>` : ""}</p>
+    <div class="labels">${chips(issue.labels)}${isMaintainer ? `<details class="edit-labels"><summary>Labels</summary><form data-form="labels"><input type="text" name="labels" value="${esc(issue.labels.join(", "))}" placeholder="bug, help wanted"><div class="row2"><span class="status"></span><button class="btn small">Save labels</button></div></form></details>` : ""}</div></div>`;
+  const tabs = pr ? `<nav class="tabs sub" aria-label="Pull request">${[["conversation", "Conversation"], ["commits", `Commits ${compared ? compared.commits.length : ""}`], ["files", "Files changed"]].map(([t, l]) => `<a class="tab" href="${href({ ...self, tab: t })}" ${route.tab === t ? 'aria-current="page"' : ""}>${l}</a>`).join("")}</nav>` : "";
+  if (pr && route.tab === "commits") return top + tabs + (compared ? `<ul class="commits">${compared.commits.map((c) => commitRow(route, c)).join("")}</ul>` : `<p class="empty">Its branch is gone.</p>`);
+  if (pr && route.tab === "files") return top + tabs + (await pullFiles(route, status, compared, comments));
+  return top + tabs + conversation(route, issue, comments, status, isMaintainer, compared);
+}
+
+function label(head) {
+  return head.replace(/^[^/]+/, (o) => (o === me ? "you" : shortAccount(o)));
+}
+
+function commentCard(route, by, time, body, extra = "") {
+  return `<article class="comment"><header>${byline(by)} <span class="muted">${esc(ago(time))}</span>${extra}</header><div class="markdown">${body.trim() ? markdown(body, route, "HEAD", "") : '<p class="muted">No description.</p>'}</div></article>`;
+}
+
+function conversation(route, issue, comments, status, isMaintainer, compared) {
+  const items = comments.map((c) => commentCard(route, c.by, c.time, c.body, c.review ? ` <span class="muted">on <a href="${href({ view: "pull", owner: route.owner, name: route.name, author: route.author, id: route.id, tab: "files" })}"><code>${esc(c.review.path)}</code> line ${c.review.line}</a>${c.review.commit !== status.headCommit ? " (an earlier commit)" : ""}</span>` : ""));
+  const closedNote = issue.state === "closed" && issue.closedBy ? `<p class="event">${byline(issue.closedBy)} closed this.</p>` : "";
+  const mergeNote = status.state === "merged" ? `<p class="event merged">Merged: <code>${esc(issue.base)}</code> now contains this branch's commits.</p>` : "";
+  const canClose = me && (me === issue.author || isMaintainer) && status.state !== "merged";
+  const howToMerge = status.state === "open" && compared && isMaintainer ? `<details class="merge"><summary>Merge by pushing</summary>
+    <pre class="cmd">git fetch trellis::${esc(collab.headOf(issue.head).owner)}/${esc(collab.headOf(issue.head).name)} ${esc(collab.headOf(issue.head).branch)}
+git checkout ${esc(issue.base)} && git merge FETCH_HEAD
+git push origin ${esc(issue.base)}</pre><p class="hint">Once <code>${esc(issue.base)}</code> contains its commits, this shows as merged.</p></details>` : "";
+  const form = me
+    ? `<form class="comment-form" data-form="comment"><label class="sr-only" for="comment-body">Comment</label><textarea id="comment-body" name="body" required maxlength="65536" placeholder="Leave a comment (Markdown)"></textarea>
+        <div class="row2"><span class="status"></span>${canClose ? `<button type="button" class="btn" data-act="state" data-state="${issue.state === "open" ? "closed" : "open"}">${issue.state === "open" ? "Close" : "Reopen"}</button>` : ""}<button class="btn primary">Comment</button></div></form>`
+    : signInFirst("comment");
+  return `${commentCard(route, issue.author, issue.time, issue.body)}${items.join("")}${closedNote}${mergeNote}${howToMerge}${form}`;
+}
+
+/** A pull request's changes from its merge base, each line open to review on the head commit. */
+async function pullFiles(route, status, compared, comments) {
+  if (!compared) return `<p class="empty">Its branch is gone.</p>`;
+  const head = await chain.read.commit(status.headCommit);
+  const base = compared.mergeBase ? await chain.read.commit(compared.mergeBase) : undefined;
+  const changed = await chain.read.changes(base?.tree, head.tree);
+  const reviews = comments.filter((c) => c.review?.commit === status.headCommit);
+  const files = await Promise.all(changed.map((change) => fileDiff(route, { cid: head.cid, parents: [compared.mergeBase] }, change, { reviews, commit: head.cid })));
+  return `<p class="summary">${changed.length} file${changed.length === 1 ? "" : "s"} changed from the merge base, <span class="add">+${files.reduce((n, f) => n + f.added, 0)}</span> <span class="del">−${files.reduce((n, f) => n + f.removed, 0)}</span>${me ? ". Press + beside a line to comment on it." : ""}</p>${files.map((f) => f.html).join("")}`;
 }
 
 // ---- After a render: images, filter, ref picker ----
@@ -426,12 +671,63 @@ document.addEventListener("change", (event) => {
 document.addEventListener("click", async (event) => {
   const button = event.target.closest("[data-act]");
   if (!button) return;
-  if (button.dataset.act === "retry") render();
-  if (button.dataset.act === "defaults") {
+  const act = button.dataset.act;
+  const route = parseRoute(location.hash);
+  if (act === "retry") render();
+  if (act === "defaults") {
     $("#node").value = DEFAULTS.node;
     $("#chain").value = DEFAULTS.chain;
+    $("#sponsor").value = DEFAULTS.sponsor;
   }
-  if (button.dataset.act === "download") {
+  if (act === "signin") signIn().catch((error) => notice(walletMessage(error)));
+  if (act === "signout") {
+    await wallet.disconnect();
+    me = null;
+    renderWho();
+    render();
+  }
+  if (act === "fork") {
+    // A fork is the same repo name under the reader's account: a card and the
+    // same refs. Its blocks are the original's, so nothing is copied.
+    button.disabled = true;
+    button.textContent = "Forking…";
+    send(async (state) => {
+      const card = await records.card(state, route.owner, route.name);
+      const refs = await records.refs(sdk, state, route.owner, route.name);
+      const fresh = !(await records.card(state, me, route.name));
+      return [
+        ...(fresh ? records.repo(me, route.name, { forkOf: `${route.owner}/${route.name}`, ...(card?.description && { description: card.description }) }) : []),
+        ...[...refs].flatMap(([ref, cid]) => records.ref(me, route.name, ref, cid)),
+      ];
+    }, (text) => (button.textContent = text))
+      .then(() => (location.hash = href({ view: "code", owner: me, name: route.name })))
+      .catch((error) => {
+        notice(walletMessage(error));
+        button.disabled = false;
+        button.textContent = "Fork";
+      });
+  }
+  if (act === "state") {
+    const form = button.closest("form");
+    const next = button.dataset.state;
+    run(form, async (state) => {
+      const raw = JSON.parse((await state.get(collab.issueKey(route.author, route.id))) ?? "{}");
+      if (me === route.author) return collab.issue(me, route.id, { ...raw, state: next, updated: time() });
+      const key = collab.triageKey(me, route.owner, route.name, route.author, route.id);
+      const old = JSON.parse((await state.get(key)) ?? "{}");
+      return collab.triage(me, route.owner, route.name, route.author, route.id, { ...old, state: next, time: time() });
+    });
+  }
+  if (act === "review") {
+    const row = button.closest("tr");
+    if (row.nextElementSibling?.classList.contains("review-row")) return row.nextElementSibling.querySelector("textarea").focus();
+    row.insertAdjacentHTML("afterend", `<tr class="review-row"><td colspan="3"><form data-form="review" data-path="${esc(button.dataset.path)}" data-line="${esc(button.dataset.line)}" data-side="${esc(button.dataset.side)}">
+      <label class="sr-only">Comment on line ${esc(button.dataset.line)}<textarea name="body" required maxlength="65536" placeholder="Comment on line ${esc(button.dataset.line)} (Markdown)"></textarea></label>
+      <div class="row2"><span class="status"></span><button type="button" class="btn" data-act="cancel-review">Cancel</button><button class="btn primary">Comment on this line</button></div></form></td></tr>`);
+    row.nextElementSibling.querySelector("textarea").focus();
+  }
+  if (act === "cancel-review") button.closest("tr").remove();
+  if (act === "download") {
     button.disabled = true;
     try {
       const url = URL.createObjectURL(new Blob([await chain.read.blob(button.dataset.cid)]));
@@ -444,16 +740,83 @@ document.addEventListener("click", async (event) => {
   }
 });
 
+/** A note above the page, until dismissed. */
+function notice(text) {
+  $("#notices").insertAdjacentHTML("beforeend", `<div class="notice" role="alert"><p>${esc(text)}</p><button class="close" aria-label="Dismiss" onclick="this.parentElement.remove()">×</button></div>`);
+}
+
+/**
+ * Sends a form's write (`build(state)`, its records), saying how it goes in
+ * the form, then shows the page again, or `then()`. Called from the submit or
+ * click itself, so Selfhold's window may open.
+ */
+function run(form, build, then = render) {
+  const status = form.querySelector(".status");
+  const say = (text, bad = false) => {
+    status.textContent = text;
+    status.classList.toggle("bad", bad);
+  };
+  const buttons = [...form.querySelectorAll("button")];
+  buttons.forEach((b) => (b.disabled = true));
+  send(build, say).then(then, (error) => {
+    say(walletMessage(error), true);
+    buttons.forEach((b) => (b.disabled = false));
+  });
+}
+
 document.addEventListener("submit", (event) => {
-  if (event.target.id !== "settings") return;
+  const form = event.target;
+  const route = parseRoute(location.hash);
+  const field = (name) => form.elements[name]?.value ?? "";
+  if (form.id === "settings") {
+    event.preventDefault();
+    settings.node = $("#node").value.trim().replace(/\/+$/, "");
+    settings.chain = $("#chain").value.trim();
+    settings.sponsor = $("#sponsor").value.trim();
+    save("node", settings.node === DEFAULTS.node ? "" : settings.node);
+    save("chain", settings.chain === DEFAULTS.chain ? "" : settings.chain);
+    try {
+      if (settings.sponsor === DEFAULTS.sponsor) localStorage.removeItem("trellis:sponsor");
+      else localStorage.setItem("trellis:sponsor", settings.sponsor);
+    } catch {}
+    connect();
+    location.hash = "#/";
+    return;
+  }
+  const kind = form.dataset.form;
+  if (!kind) return;
   event.preventDefault();
-  settings.node = $("#node").value.trim().replace(/\/+$/, "");
-  settings.chain = $("#chain").value.trim();
-  save("node", settings.node === DEFAULTS.node ? "" : settings.node);
-  save("chain", settings.chain === DEFAULTS.chain ? "" : settings.chain);
-  connect();
-  location.hash = "#/";
+  const repo = `${route.owner}/${route.name}`;
+  if (kind === "issue" || kind === "pull") {
+    const id = collab.newId();
+    const record = { repo, title: field("title").trim(), body: field("body"), time: time(), ...(kind === "pull" && { head: field("head"), base: field("base") }) };
+    run(form, () => collab.issue(me, id, record), () => (location.hash = href({ view: kind, owner: route.owner, name: route.name, author: me, id })));
+  }
+  if (kind === "comment") run(form, () => collab.post(me, collab.newId(), { on: `${route.author}/${route.id}`, body: field("body"), time: time() }));
+  if (kind === "review") {
+    const review = { commit: null, path: form.dataset.path, line: Number(form.dataset.line), side: form.dataset.side };
+    run(form, async (state) => {
+      // The head commit the reader is looking at, as the chain names it now.
+      const card = await records.card(state, route.owner, route.name);
+      const issue = await collab.oneIssue(state, route.owner, route.name, card, route.author, route.id);
+      const { headCommit } = await pullStatus(state, issue, await records.refs(sdk, state, route.owner, route.name));
+      return collab.post(me, collab.newId(), { on: `${route.author}/${route.id}`, body: field("body"), time: time(), review: { ...review, commit: headCommit } });
+    });
+  }
+  if (kind === "labels") {
+    run(form, async (state) => {
+      const key = collab.triageKey(me, route.owner, route.name, route.author, route.id);
+      const old = JSON.parse((await state.get(key)) ?? "{}");
+      return collab.triage(me, route.owner, route.name, route.author, route.id, { ...old, labels: collab.labelsOf(field("labels")), time: time() });
+    });
+  }
+  if (kind === "release") {
+    const title = field("title").trim();
+    run(form, () => collab.release(me, route.name, form.dataset.tag, { ...(title && { title }), notes: field("notes"), time: time() }));
+  }
 });
 
 addEventListener("hashchange", render);
+me = await wallet.address().catch(() => null);
+renderWho();
 render();

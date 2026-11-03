@@ -17,6 +17,8 @@ env:
   LATTICE_NODE_REF: 9abd15b1bb05a0d4305e83f64c4676a6e296071f # the node lattice-sponsor builds on
   LATTICE_SPONSOR_REPO: 0xLattice/lattice-sponsor
   LATTICE_SPONSOR_REF: 24d8c4def3bd47c45b4cd10115762894e5185ea5 # keeps files for work (--sell-storage)
+  LATTICE_WALLET_REPO: adalinxx/selfhold-wallet
+  LATTICE_WALLET_REF: e46b9ef8e132196e704b8ec37a10a52a7710d1fd # @selfhold/web, as app/vendor/selfhold.mjs
 
 jobs:
   client:
@@ -123,13 +125,16 @@ jobs:
               echo "::group::$f"; tail -n 200 "$f" || true; echo "::endgroup::"
             done
 
-  # The web viewer in headless Chromium: a repo pushed by stock git, browsed.
+  # The page in headless Chromium: a repo pushed by stock git and browsed;
+  # then issues, a pull request, line review and releases through Selfhold's
+  # window, with a passkey and no coins.
   ui:
     needs: node
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
       LATTICE: ${{ github.workspace }}/.deps/bin/lattice
+      LATTICE_WALLET_WEB: ${{ github.workspace }}/.deps/selfhold-wallet/dist-web
       E2E_SECONDS: "600"
       TRELLIS_WAIT_SECONDS: "600"
     steps:
@@ -142,6 +147,17 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.LATTICE_WALLET_REPO }}
+          ref: ${{ env.LATTICE_WALLET_REF }}
+          path: .deps/selfhold-wallet
+          submodules: true
+      - name: Build Selfhold's window
+        working-directory: .deps/selfhold-wallet
+        run: npm ci && npm run build:web
+      - name: The page's selfhold.mjs is the pinned one's
+        run: tail -n +3 app/vendor/selfhold.mjs | cmp - .deps/selfhold-wallet/dist-web/v1/selfhold.js
       - working-directory: e2e/ui
         run: npm ci && npx playwright install --with-deps chromium && npm test
       - if: failure()
