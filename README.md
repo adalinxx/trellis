@@ -7,8 +7,8 @@ and serve. No coins are needed: a sponsor pays each write's fee and keeps each
 push's objects in return for a moment of the pusher's work.
 
 Stock git pushes and clones through `git-remote-trellis`, and `trellis
-import` brings a repo from GitHub. The web viewer, and issues and pull
-requests, come next.
+import` brings a repo from GitHub. The web viewer (`app/`) browses any
+repo in the browser. Issues and pull requests come next.
 
 ## Use
 
@@ -45,6 +45,26 @@ everything pushed through it). Any node can serve a clone, but one that
 doesn't hold the blocks fetches each from its peers, a few at a time: a
 3,200-object repo clones in about 16 s from the host and about 5 minutes
 through such a node.
+
+### Browse
+
+`app/` is a static page: serve the repository root from any static host and
+open `app/`. It lists the chain's repos and shows a repo's files, README,
+history, branches, tags and each commit's changes, for any branch, tag or
+commit. It reads from the node in Settings (by default
+`lattice-testnet-apps-iad.fly.dev`, chain `Nexus/testnet/trellis`; `?node=`
+and `?chain=` on the page's URL override both) and reads only the blocks it
+shows: a directory without its files, a file's size without its chunks, a
+commit's changes only in the subtrees that differ. A file over 2 MiB is read
+only when asked. Every block is checked against its CID. A README's raw HTML
+is shown as text, only http(s) and mailto links are kept, and an image from
+outside the repo becomes a link, so no other host learns who reads.
+Signatures are shown as present, not checked: `git verify-commit` does that,
+on a clone. The fonts ship with the page.
+
+```sh
+python3 -m http.server 8791   # from the repository root, then open http://127.0.0.1:8791/app/
+```
 
 ### Bring a repo from GitHub
 
@@ -123,6 +143,8 @@ history; a clone recomputes it and refuses a block whose claim is wrong.
 - `client/git.mjs`: a local repository through the `git` command (Node).
 - `client/remote.mjs`: the git remote helper (`bin/git-remote-trellis`).
 - `client/import.mjs`: `trellis import` (`bin/trellis`).
+- `client/browse.mjs`: what the viewer reads (commits, trees, files,
+  history, changes) and its line diff (Myers', with git's hunks).
 
 ## No coins
 
@@ -158,6 +180,16 @@ commits), pushed by stock git and cloned through the reader and from the
 host. It passes, with the helper under 760 MB of memory.
 
 It passes on lattice-node `9abd15b` with lattice-sponsor `24d8c4d`.
+
+The viewer's test drives `app/` in headless Chromium (Playwright) against the
+same private stack (`e2e/stack.mjs`): a repo pushed by stock git with no
+coins, then its list, files, README, history, diffs, branches, tags, a large
+file read only when asked, and a node that can't serve the chain:
+
+```sh
+cd e2e/ui && npm ci && npx playwright install chromium
+LATTICE=<lattice-node>/.build/debug/lattice npm test
+```
 
 The policy's own tests:
 

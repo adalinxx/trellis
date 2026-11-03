@@ -11,66 +11,25 @@
 //   LATTICE=<lattice-node>/.build/debug/lattice \
 //   LATTICE_SPONSOR=<lattice-sponsor>/.build/debug/lattice-sponsor node e2e/run.mjs
 import assert from "node:assert/strict";
-import { execFileSync, spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, openSync, readFileSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import * as sdk from "../vendor/lattice-sdk.js";
 import { git, objectReader, objectsBetween, store } from "../client/git.mjs";
 import * as records from "../client/records.mjs";
 import { keep, sponsored } from "../client/sponsor.mjs";
-import { tip, view, volumeLoader } from "../client/state.mjs";
 import { encode, fetchObjects } from "../client/transfer.mjs";
 import { changes, transaction } from "../client/write.mjs";
+import * as stack from "./stack.mjs";
+import { CHAIN, host, here, openReads, until } from "./stack.mjs";
 
-const here = (path) => fileURLToPath(new URL(path, import.meta.url));
-const CHAIN = ["Nexus", "trellis"];
-const author = { listen: 27001, rpc: 27080, publicRead: 27081 };
 const reader = { listen: 27011, rpc: 27090, publicRead: 27091 };
-const SPONSOR_PORT = 27095;
-const authorNode = `http://127.0.0.1:${author.publicRead}`;
-const sponsorURL = `http://127.0.0.1:${SPONSOR_PORT}`;
-const LATTICE = process.env.LATTICE;
-const LATTICE_SPONSOR = process.env.LATTICE_SPONSOR || join(dirname(LATTICE), "lattice-sponsor");
-
-const host = (root) => ({
-  root,
-  lattice: (...args) => execFileSync(LATTICE, [...args, "--root", root], { encoding: "utf8" }),
-  configure(edit) {
-    const file = `${root}/lattice.json`;
-    const topology = JSON.parse(readFileSync(file, "utf8"));
-    edit(topology);
-    writeFileSync(file, JSON.stringify(topology, null, 2));
-  },
-  cookie: () => readFileSync(`${root}/chains/Nexus/.cookie`, "utf8"),
-});
-const authors = host(mkdtempSync(`${tmpdir()}/trellis-e2e-`));
 const readers = host(mkdtempSync(`${tmpdir()}/trellis-e2e-reader-`));
 const work = mkdtempSync(`${tmpdir()}/trellis-e2e-repos-`);
-
-async function until(label, condition, seconds = Number(process.env.E2E_SECONDS ?? 300)) {
-  const deadline = Date.now() + seconds * 1000;
-  let failure;
-  for (;;) {
-    const value = await condition().catch((error) => void (failure = error));
-    if (value) return value;
-    if (Date.now() > deadline) throw new Error(`timed out waiting for ${label}`, { cause: failure });
-    await new Promise((resolve) => setTimeout(resolve, 500));
-  }
-}
-
-async function account(address, at = authorNode) {
-  const response = await fetch(`${at}/api/state/account/${address}?chainPath=${CHAIN.join("/")}`);
-  return response.ok ? response.json() : {};
-}
-
-/** The chain's state at a node's tip, as a view. */
-async function state(at = authorNode) {
-  const volumes = new sdk.VolumeClient(new sdk.HTTPVolumeTransport(`${at}/volumes`, { chainPath: CHAIN }));
-  const { generalStateCID } = await tip(sdk, at, CHAIN, volumes);
-  return view(volumeLoader(volumes, sdk.decodeDagCbor), generalStateCID);
-}
+let authors, author, authorNode, sponsorURL;
+const account = (address, at = authorNode) => stack.account(at, address);
+const state = (at = authorNode) => stack.state(at);
 
 /** `who` writes `writes` with no coins: the sponsor pays the fee for work. Resolves to the node's answer. */
 async function submit(who, writes) {
@@ -125,48 +84,11 @@ function newRepo(path) {
   return path;
 }
 
-let sponsor;
+let running;
 try {
-  // The host: Nexus and Nexus/trellis, a fee of 1 as on testnet, mined here.
-  const minerKey = sdk.generatePrivateKey();
-  const miner = sdk.accountFromPrivateKey(minerKey);
-  authors.lattice("init");
-  authors.configure((t) => {
-    Object.assign(t, { ...author, webSocket: 0, publicSubmit: true, minRelayFee: 1 });
-    t.publicReadExpensiveRate = 10000;
-    t.publicReadRate = 10000;
-    t.publicReadMaxRate = 100000;
-    t.peers = [];
-    t.mine = { worker: "cpu", workers: 1, batchSize: 100000 };
-  });
-  authors.lattice("up");
-  authors.lattice("child", "create", CHAIN.join("/"), "--spec", here("./spec.json"), "--policy-module", here("../chain/trellis_policy.wasm"));
-  authors.configure((t) => (t.mine.recipients = { [CHAIN.join("/")]: miner.address }));
-  authors.lattice("mine", "start");
-  await until("Nexus/trellis pays the miner", async () => BigInt((await account(miner.address)).balance ?? 0) > 1000n);
-  console.log("Nexus/trellis is mined");
-
-  // The sponsor: fees and storage for work, its own coins funded by the miner.
-  const sponsorKey = `${authors.root}/sponsor-key.json`;
-  execFileSync(LATTICE, ["key", "generate", "--out", sponsorKey]);
-  const sponsorAddress = JSON.parse(readFileSync(sponsorKey, "utf8")).address;
-  {
-    const nonce = BigInt((await account(miner.address)).nonce ?? 0);
-    const body = sdk.buildTransfer({ from: miner.address, to: sponsorAddress, amount: 500n, fee: 1n, nonce, chainPath: CHAIN });
-    const { publicKey, signature } = sdk.signTransactionBody(body, minerKey);
-    const r = await fetch(`${authorNode}/transactions`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(sdk.transactionPayload({ [publicKey]: signature }, body)) });
-    assert.ok(r.ok, `fund the sponsor: ${r.status} ${await r.text()}`);
-    await until("the sponsor is funded", async () => BigInt((await account(sponsorAddress)).balance ?? 0) >= 500n);
-  }
-  const log = openSync(`${authors.root}/sponsor.log`, "a");
-  sponsor = spawn(LATTICE_SPONSOR, [
-    "--node", `http://127.0.0.1:${author.rpc}`, "--cookie-file", `${authors.root}/chains/Nexus/.cookie`, "--key", sponsorKey,
-    "--share-work", "2^12", "--fee", "1", "--most-pay", "0", "--port", String(SPONSOR_PORT),
-    "--sell-storage", "--storage-rate", `${CHAIN.join("/")}=1000000`, "--storage-file", `${authors.root}/sponsor-storage.json`,
-  ], { stdio: ["ignore", log, log] });
-  await until("the sponsor takes work on Nexus/trellis", async () =>
-    (await fetch(`${sponsorURL}/work`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ chain: CHAIN.join("/") }) })).ok, 180);
-  console.log("the sponsor takes work");
+  running = await stack.start(27000);
+  ({ authors, authorNode, sponsorURL } = running);
+  author = running.ports;
 
   // Alice's repository: a file over one Volume, so a blob is chunked.
   const alice = sdk.accountFromPrivateKey(sdk.generatePrivateKey());
@@ -203,9 +125,7 @@ try {
   readers.lattice("init");
   readers.configure((t) => {
     Object.assign(t, { ...reader, webSocket: 0, hostedChains: [CHAIN.join("/")] });
-    t.publicReadExpensiveRate = 10000;
-    t.publicReadRate = 10000;
-    t.publicReadMaxRate = 100000;
+    openReads(t);
     const identity = authors.lattice("identity").match(/([0-9a-f]{64})@/)[1];
     t.peers = [`${identity}@127.0.0.1:${author.listen}`];
   });
@@ -385,8 +305,6 @@ try {
   }
   console.log("PASS");
 } finally {
-  sponsor?.kill();
   try { readers.lattice("down"); } catch {}
-  try { authors.lattice("mine", "stop"); } catch {}
-  try { authors.lattice("down"); } catch {}
+  running?.stop();
 }

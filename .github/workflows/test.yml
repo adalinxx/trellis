@@ -122,3 +122,32 @@ jobs:
             while IFS= read -r f; do
               echo "::group::$f"; tail -n 200 "$f" || true; echo "::endgroup::"
             done
+
+  # The web viewer in headless Chromium: a repo pushed by stock git, browsed.
+  ui:
+    needs: node
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      LATTICE: ${{ github.workspace }}/.deps/bin/lattice
+      E2E_SECONDS: "600"
+      TRELLIS_WAIT_SECONDS: "600"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: lattice
+          path: .deps/bin
+      - run: chmod +x .deps/bin/* && sudo apt-get update && sudo apt-get install -y --no-install-recommends libsqlite3-0 libcurl4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - working-directory: e2e/ui
+        run: npm ci && npx playwright install --with-deps chromium && npm test
+      - if: failure()
+        name: The node's and the sponsor's logs
+        run: |
+          find "${RUNNER_TEMP:-/tmp}" /tmp -path '*trellis-e2e-*' -name '*.log' -type f 2>/dev/null | sort -u |
+            while IFS= read -r f; do
+              echo "::group::$f"; tail -n 200 "$f" || true; echo "::endgroup::"
+            done

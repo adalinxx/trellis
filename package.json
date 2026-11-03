@@ -3,5 +3,5 @@
   "private": true,
   "type": "module",
   "bin": { "git-remote-trellis": "bin/git-remote-trellis" },
-  "scripts": { "test": "node --test client/*.test.mjs test/*.test.mjs" }
+  "scripts": { "test": "node --test client/*.test.mjs app/*.test.mjs test/*.test.mjs" }
 }
