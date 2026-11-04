@@ -152,8 +152,17 @@ async function send(build, status = () => {}) {
   status("Approve it in Selfhold's window…");
   const sent = await wallet.writeRecords(request, { account: me, progress: (text) => status(`${text.replace(/[.…]+$/, "")}…`) });
   if (sent) {
-    status("Sent. Waiting for its block…");
-    await sent.wait();
+    // A child chain gets at most one block per block of its parent, so the
+    // wait is the parent's pace (testnet's: about a minute), shown as it runs.
+    const since = Date.now();
+    const tick = () => status(`Sent. Waiting for its block… ${Math.round((Date.now() - since) / 1000)} s`);
+    tick();
+    const ticking = setInterval(tick, 1000);
+    try {
+      await sent.wait();
+    } finally {
+      clearInterval(ticking);
+    }
   }
   chain.stale();
 }

@@ -1,27 +1,41 @@
 #!/usr/bin/env node
 // trellis import <source> [<directory>]: a SHA-1 repository as a new SHA-256
 // one, ready to push to a trellis:: remote. See client/import.mjs.
+// trellis import-issues <github repo>: its issues and pull requests, in a
+// repository pushed to Trellis. See client/github.mjs.
+import { execFileSync } from "node:child_process";
 import { basename, resolve } from "node:path";
 import { importRepository } from "../client/import.mjs";
+import { importIssues } from "../client/github.mjs";
 
-const usage = "usage: trellis import <github url or path> [<directory>]";
+const usage = "usage: trellis import <github url or path> [<directory>]\n       trellis import-issues <github url>   (in a repository whose origin is trellis::)";
 const [command, source, directory] = process.argv.slice(2);
-if (command !== "import" || !source) {
+const say = (line) => process.stderr.write(`trellis: ${line}\n`);
+const fail = (error) => {
+  process.stderr.write(`trellis: ${error?.message ?? error}\n`);
+  process.exit(1);
+};
+if (command === "import" && source) {
+  const dest = resolve(directory ?? basename(source.replace(/\/+$/, "")).replace(/\.git$/, ""));
+  importRepository(source, dest).then(
+    ({ head, branches, tags, commits, signed }) => {
+      process.stdout.write(
+        `imported ${commits} commits, ${branches.length} branches and ${tags.length} tags into ${dest} (SHA-256; HEAD ${head})\n` +
+          (signed ? `${signed} signatures kept as text in git notes: they were made over the old ids\n` : "") +
+          `next: git -C ${dest} remote add origin trellis::<your address>/<name>\n` +
+          `      git -C ${dest} push origin --all && git -C ${dest} push origin --tags refs/notes/commits\n` +
+          `then, in ${dest}: trellis import-issues ${source}\n`,
+      );
+    },
+    fail,
+  );
+} else if (command === "import-issues" && source) {
+  const gitDir = resolve(execFileSync("git", ["rev-parse", "--git-dir"], { encoding: "utf8" }).trim());
+  importIssues(source, { gitDir, say }).then(
+    ({ items, comments, written }) => process.stdout.write(`${items} issues and pull requests and ${comments} comments from GitHub; ${written} records written\n`),
+    fail,
+  );
+} else {
   process.stderr.write(`${usage}\n`);
   process.exit(2);
 }
-const dest = resolve(directory ?? basename(source.replace(/\/+$/, "")).replace(/\.git$/, ""));
-importRepository(source, dest).then(
-  ({ head, branches, tags, commits, signed }) => {
-    process.stdout.write(
-      `imported ${commits} commits, ${branches.length} branches and ${tags.length} tags into ${dest} (SHA-256; HEAD ${head})\n` +
-        (signed ? `${signed} signatures kept as text in git notes: they were made over the old ids\n` : "") +
-        `next: git -C ${dest} remote add origin trellis::<your address>/<name>\n` +
-        `      git -C ${dest} push origin --all && git -C ${dest} push origin --tags refs/notes/commits\n`,
-    );
-  },
-  (error) => {
-    process.stderr.write(`trellis: ${error?.message ?? error}\n`);
-    process.exit(1);
-  },
-);

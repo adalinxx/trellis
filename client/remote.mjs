@@ -28,7 +28,7 @@ import { changes, transaction } from "./write.mjs";
 
 const say = (line) => process.stderr.write(`trellis: ${line}\n`);
 
-function setting(gitDir, name, variable) {
+export function setting(gitDir, name, variable) {
   if (process.env[variable]) return process.env[variable];
   try {
     return execFileSync("git", ["--git-dir", gitDir, "config", "--get", `trellis.${name}`], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim() || undefined;
@@ -45,7 +45,7 @@ export function parseAddress(address) {
 }
 
 /** The chain as nodes serve it: state at the tip, blocks by CID, and where writes go. */
-function chainAt(urls, chainPath) {
+export function chainAt(urls, chainPath) {
   const transports = urls.map((url) => new sdk.BatchingVolumeTransport(new sdk.HTTPVolumeTransport(`${url}/volumes`, { chainPath })));
   const client = new sdk.VolumeClient(anyHost(transports));
   // A node may answer 503 while it fetches new content from its peers, one

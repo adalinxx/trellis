@@ -95,6 +95,7 @@ trellis import https://github.com/<org>/<repo> myrepo   # any URL or path git cl
 cd myrepo
 git remote add origin trellis::<your address>/<repo>
 git push origin --all && git push origin --tags refs/notes/commits
+trellis import-issues https://github.com/<org>/<repo>   # its issues and pull requests
 ```
 
 `trellis import` converts a SHA-1 repository to SHA-256 with git's own
@@ -105,8 +106,17 @@ tag gets a git note (`refs/notes/commits`, shown by `git log`) with its old
 id and, if it was signed, the signature as text. An old id in a message or a
 link can still be found with `git log --notes --grep=<id>`. The notes name a
 URL source without credentials and a local path by its last segment only. A
-repository with submodules is refused: their ids are SHA-1. Issues and pull
-requests aren't imported yet.
+repository with submodules is refused: their ids are SHA-1.
+
+`trellis import-issues`, in a repository whose `origin` is yours on Trellis,
+brings the GitHub repo's issues and pull requests, with their comments,
+labels, dates and open or closed state. They are written and signed by you:
+their GitHub authors can't sign here, so each one starts with a line naming
+its author and linking the original. A pull request comes in as an issue
+labelled `pull request`, since its branches are GitHub's. Ids come from the
+GitHub URLs, so running it again writes only what changed (and finishes an
+import that stopped). It needs no coins. GitHub lets it make 60 requests an
+hour without `GITHUB_TOKEN`, 100 issues or comments each.
 
 Each setting can also come from the environment: `TRELLIS_NODE`,
 `TRELLIS_SPONSOR`, `TRELLIS_KEY`, `TRELLIS_CHAIN` (`Nexus/trellis` by
@@ -180,6 +190,8 @@ history; a clone recomputes it and refuses a block whose claim is wrong.
 - `client/git.mjs`: a local repository through the `git` command (Node).
 - `client/remote.mjs`: the git remote helper (`bin/git-remote-trellis`).
 - `client/import.mjs`: `trellis import` (`bin/trellis`).
+- `client/github.mjs`: `trellis import-issues`, GitHub's issues and pull
+  requests as collaboration records.
 - `client/browse.mjs`: what the page reads (commits, trees, files,
   history, changes, a pull request's commits and merge base) and its line
   diff (Myers', with git's hunks).
