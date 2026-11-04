@@ -88,17 +88,27 @@ export async function* list(load, rootCID, prefix = "") {
     else return;
     path += node.prefix;
   }
-  yield* entries(load, node, volume, path);
+  yield* entries(path, node, fetchAll(load, node, volume));
 }
 
-async function* entries(load, node, volume, path) {
+const byKey = (a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
+
+// Every node under `node`, each asked for as soon as its parent arrives
+// rather than when the walk in key order reaches it, so a listing takes as
+// many round trips as the trie is deep, not one per node.
+function fetchAll(load, node, volume) {
+  return [...node.children].sort(byKey).map((child) => {
+    const pending = load(child.value.rawCID, volume).then((loaded) => ({ ...loaded, children: fetchAll(load, loaded.node, loaded.volume) }));
+    pending.catch(() => {}); // the walk reports it, if it gets there
+    return pending;
+  });
+}
+
+async function* entries(path, node, children) {
   if (node.value !== undefined) yield [path, node.value];
-  const children = [...node.children].sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
-  // Siblings are independent, so fetch them together and yield in order.
-  const loaded = children.map((child) => load(child.value.rawCID, volume));
-  for (const pending of loaded) {
+  for (const pending of children) {
     const child = await pending;
-    yield* entries(load, child.node, child.volume, path + child.node.prefix);
+    yield* entries(path + child.node.prefix, child.node, child.children);
   }
 }
 
