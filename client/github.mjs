@@ -94,26 +94,13 @@ export async function githubListing(path, { token = process.env.GITHUB_TOKEN, pr
  * Written in transactions of up to `chunk` bytes, one after another.
  */
 export async function importIssues(source, { gitDir, say = () => {}, chunk = 400_000 } = {}) {
-  const sdk = await import("../vendor/lattice-sdk.js");
-  const { readFileSync } = await import("node:fs");
-  const { execFileSync } = await import("node:child_process");
-  const { chainAt, parseAddress, setting } = await import("./remote.mjs");
-  const { sponsored } = await import("./sponsor.mjs");
-  const { changes, transaction } = await import("./write.mjs");
-
+  const { origin } = await import("./team.mjs");
   const repo = githubRepo(source);
-  const origin = execFileSync("git", ["--git-dir", gitDir, "remote", "get-url", "origin"], { encoding: "utf8" }).trim();
-  if (!origin.startsWith("trellis::")) throw new Error(`origin is ${origin}, not a trellis:: address`);
-  const { owner, name } = parseAddress(origin.slice("trellis::".length));
-  const get = (key, variable) => setting(gitDir, key, variable);
-  const urls = (get("node", "TRELLIS_NODE") ?? "").split(",").map((u) => u.trim().replace(/\/+$/, "")).filter(Boolean);
-  const keyFile = get("key", "TRELLIS_KEY");
-  const sponsor = get("sponsor", "TRELLIS_SPONSOR");
-  if (!urls.length || !keyFile || !sponsor) throw new Error("set trellis.node, trellis.key and trellis.sponsor (git config) first");
-  const privateKey = sdk.hexToBytes(JSON.parse(readFileSync(keyFile, "utf8")).privateKey);
-  if (sdk.accountFromPrivateKey(privateKey).address !== owner) throw new Error(`trellis.key isn't ${owner}'s, whose repo origin is`);
-  const chainPath = (get("chain", "TRELLIS_CHAIN") ?? "Nexus/trellis").split("/");
-  const chain = chainAt(urls, chainPath);
+  const target = await origin(gitDir);
+  const { owner, name, chain, chainPath, sdk } = target;
+  const me = target.signer(say);
+  if (me.address !== owner) throw new Error(`trellis.key isn't ${owner}'s, whose repo origin is`);
+  const { changes } = await import("./write.mjs");
 
   say(`reading ${repo}'s issues and pull requests from GitHub`);
   const items = await githubListing(`/repos/${repo}/issues?state=all`, { progress: (n) => say(`  ${n} issues and pull requests`) });
@@ -136,9 +123,7 @@ export async function importIssues(source, { gitDir, say = () => {}, chunk = 400
   const wait = Number(process.env.TRELLIS_WAIT_SECONDS ?? 600) * 1000;
   for (const [i, batch] of batches.entries()) {
     say(`writing ${i + 1}/${batches.length}: ${batch.length} records, the fee paid with this machine's work`);
-    const draft = transaction({ owner, actions: batch, nonce: await chain.nonce(owner), chainPath });
-    const response = await chain.submit(await sponsored(sdk, sponsor, draft, privateKey));
-    if (!response.ok) throw new Error(`refused: ${(await response.text()).replace(/\s+/g, " ").slice(0, 300)}`);
+    await me.write(chain, chainPath, batch, `Import issues, ${i + 1} of ${batches.length}`);
     // Landed once its first and last records read back (a run again mends any gap).
     const ends = [batch[0], batch.at(-1)];
     for (const deadline = Date.now() + wait; ; ) {

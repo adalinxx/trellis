@@ -217,7 +217,49 @@ export function reader(sdk, load) {
   /** Whether `target` is `from` or one of its ancestors, looking `limit` commits back. */
   const contains = async (from, target, limit = 2000) => (await ancestors(from, limit)).has(target);
 
-  return { object, commit, peel, tree, size, blob, at, history, changes, ancestors, compare, contains };
+  /**
+   * Files under tree `root` whose path or text holds `query` (case-insensitive):
+   * `{ matches: [{ path, lines: [{ line, text }] }], files, skipped, more }`.
+   * Text files of at most `maxBytes` are read, a few at a time; at most
+   * `limit` files match. Every block read is checked by its CID, as always.
+   */
+  async function grep(root, query, { limit = 100, maxBytes = 512 << 10, linesPerFile = 5, progress = () => {} } = {}) {
+    const needle = query.toLowerCase();
+    const files = [];
+    const walk = async (cid, prefix) => {
+      const entries = await tree(cid);
+      await Promise.all(entries.map((e) => (e.kind === "tree" ? walk(e.cid, `${prefix}${e.name}/`) : e.kind === "blob" ? files.push({ path: prefix + e.name, cid: e.cid }) : undefined)));
+    };
+    await walk(root, "");
+    files.sort((a, b) => (a.path < b.path ? -1 : 1));
+    const matches = [];
+    let skipped = 0;
+    let read = 0;
+    let next = 0;
+    const worker = async () => {
+      while (next < files.length && matches.length < limit) {
+        const file = files[next++];
+        const byPath = file.path.toLowerCase().includes(needle);
+        let lines = [];
+        if ((await size(file.cid)) > maxBytes) skipped++;
+        else {
+          const bytes = await blob(file.cid);
+          if (!isText(bytes)) skipped++;
+          else {
+            const all = new TextDecoder().decode(bytes).split("\n");
+            for (let i = 0; i < all.length && lines.length < linesPerFile; i++) if (all[i].toLowerCase().includes(needle)) lines.push({ line: i + 1, text: all[i].slice(0, 300) });
+          }
+        }
+        progress(++read, files.length);
+        if (byPath || lines.length) matches.push({ path: file.path, lines });
+      }
+    };
+    await Promise.all(Array.from({ length: 8 }, worker));
+    matches.sort((a, b) => (a.path < b.path ? -1 : 1));
+    return { matches: matches.slice(0, limit), files: files.length, skipped, more: next < files.length };
+  }
+
+  return { object, commit, peel, tree, size, blob, at, history, changes, ancestors, compare, contains, grep };
 }
 
 /** Whether bytes look like text: no NUL in the first 8000, as git decides. */

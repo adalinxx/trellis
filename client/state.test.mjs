@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { get, list } from "./state.mjs";
+import { get, heldFirst, list } from "./state.mjs";
 
 // A trie by hand: under "k/", 16 × 16 leaves "k/<x><y>", each node one fetch
 // that takes `delay` ms, as reading from a node over the network does.
@@ -34,4 +34,17 @@ test("a listing is in key order, and takes as many round trips as the trie is de
   assert.ok(elapsed < 8 * delay, `took ${elapsed} ms`);
   assert.equal(await get(load, "root", "k/3c"), "v3c");
   assert.equal(await get(load, "root", "k/3"), undefined);
+});
+
+test("a block comes from a host that holds it, before any host fetches from peers", async () => {
+  const volume = (cid) => ({ cid });
+  const holder = { getVolumes: async (cids) => new Map(cids.filter((c) => c.startsWith("held")).map((c) => [c, volume(c)])) };
+  const empty = { getVolumes: async () => new Map() };
+  const broken = { getVolumes: async () => { throw new Error("down"); } };
+  const fetched = [];
+  const fallback = { getVolume: async (cid) => (fetched.push(cid), volume(cid)) };
+  const reader = heldFirst(async () => [empty, broken, holder], fallback, { batch: 2 });
+  const got = await Promise.all(["held-1", "held-2", "held-3", "elsewhere"].map((cid) => reader.getVolume(cid)));
+  assert.deepEqual(got.map((v) => v.cid), ["held-1", "held-2", "held-3", "elsewhere"]);
+  assert.deepEqual(fetched, ["elsewhere"]);
 });

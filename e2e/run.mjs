@@ -12,12 +12,15 @@
 //   LATTICE_SPONSOR=<lattice-sponsor>/.build/debug/lattice-sponsor node e2e/run.mjs
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as sdk from "../vendor/lattice-sdk.js";
 import { git, objectReader, objectsBetween, store } from "../client/git.mjs";
 import * as records from "../client/records.mjs";
+import * as collab from "../client/collab.mjs";
+import { checks as checksOn } from "../client/checks.mjs";
+import { reader as blockReader } from "../client/browse.mjs";
 import { keep, sponsored } from "../client/sponsor.mjs";
 import { encode, fetchObjects } from "../client/transfer.mjs";
 import { changes, transaction } from "../client/write.mjs";
@@ -190,7 +193,8 @@ try {
   assert.equal(BigInt((await account(carol.address)).balance ?? 0), 0n, "Carol has no coins");
   console.log("git push: a new repo, coinless");
 
-  // Cloned through the reader's node.
+  // Cloned through the reader's node, once it has the push.
+  await until("the reader's node has Carol's main", async () => (await records.refs(sdk, await state(readerNode), carol.address, "tools")).has("refs/heads/main"));
   const cloneDir = join(work, "tools-clone");
   gitWith(helperEnv(readerNode), work, "clone", "-q", address, cloneDir);
   assert.equal(run(cloneDir, "rev-parse", "--show-object-format"), "sha256");
@@ -218,6 +222,100 @@ try {
   run(tools, "commit", "-q", "--allow-empty", "-m", "by someone else");
   assert.match(gitFails(helperEnv(authorNode, aliceKey), tools, "push", "origin", "main"), /this key is/);
   console.log("git push: a rewrite only with --force; another account's key refused");
+
+  // A team: Carol makes Alice a maintainer; Alice pushes with her own key,
+  // and a clone sees her commit. Once Carol drops her, Alice can't push, and
+  // main stays at Alice's commit.
+  const trellis = (env, cwd, ...args) => execFileSync(here("../bin/trellis"), args, { cwd, encoding: "utf8", env, stdio: ["ignore", "pipe", "pipe"] }).trim();
+  assert.match(trellis(helperEnv(authorNode), tools, "maintainers", "add", alice.address), new RegExp(alice.address));
+  assert.throws(() => trellis(helperEnv(authorNode, aliceKey), tools, "maintainers", "add", bob.address), /only .* the owner/);
+  gitWith(helperEnv(authorNode, aliceKey), tools, "push", "-q", "origin", "main");
+  const byAlice = run(tools, "rev-parse", "main");
+  await until("the reader's node has Alice's push", async () => {
+    const words = await records.words(sdk, await state(readerNode), carol.address, "tools");
+    return words.get("refs/heads/main")?.by === alice.address;
+  });
+  gitWith(helperEnv(readerNode), cloneDir, "fetch", "-q", "origin");
+  assert.equal(run(cloneDir, "rev-parse", "origin/main"), byAlice);
+  // main stands on Alice's push; dropping her re-states it as Carol's.
+  trellis(helperEnv(authorNode), tools, "maintainers", "remove", alice.address);
+  assert.deepEqual((await records.words(sdk, await state(), carol.address, "tools")).get("refs/heads/main")?.by, carol.address);
+  run(tools, "commit", "-q", "--allow-empty", "-m", "by Alice, dropped");
+  assert.match(gitFails(helperEnv(authorNode, aliceKey), tools, "push", "origin", "main"), /not one of .* maintainers/);
+  run(tools, "reset", "-q", "--hard", byAlice);
+  await until("the reader's node has the new card", async () => !(await records.card(await state(readerNode), carol.address, "tools"))?.delegates?.length);
+  gitWith(helperEnv(readerNode), cloneDir, "fetch", "-q", "origin");
+  assert.equal(run(cloneDir, "rev-parse", "origin/main"), byAlice);
+  console.log("team: a maintainer pushes with their own key; once dropped, can't, and main stays put");
+
+  // A mirror keeps every block of the repo through a sponsor, from a clone;
+  // a clone that lacks a branch is told to fetch first.
+  assert.match(trellis(helperEnv(readerNode), cloneDir, "mirror", sponsorURL), /^\d+ blocks kept by /);
+  console.log("trellis mirror: the repo's blocks kept again, made from a clone");
+
+  // trellis release: a tag's notes and a file, the file kept by the sponsor
+  // and read back by its CID.
+  const asset = join(work, "tool-v2.sh");
+  writeFileSync(asset, "#!/bin/sh\necho tool v2, packed\n");
+  assert.match(trellis(helperEnv(authorNode), tools, "release", "v2", "--title", "Two", "--notes", "The second tool.", asset), /released v2 with tool-v2\.sh/);
+  const released = (await collab.releases(await state(), carol.address, "tools", await records.card(await state(), carol.address, "tools"))).get("v2");
+  assert.equal(released.title, "Two");
+  assert.deepEqual(released.files.map((f) => [f.name, f.size]), [["tool-v2.sh", readFileSync(asset).length]]);
+  const assetBytes = await blockReader(sdk, load).blob(released.files[0].cid);
+  assert.equal(Buffer.from(assetBytes).toString(), readFileSync(asset, "utf8"));
+  console.log("trellis release: notes and a file, kept by the sponsor");
+
+  // CI: a runner runs .trellis/ci on the branch tip and posts its result;
+  // a check from someone the card doesn't name doesn't count.
+  mkdirSync(join(tools, ".trellis"), { recursive: true });
+  writeFileSync(join(tools, ".trellis/ci"), "#!/bin/sh\necho checking $TRELLIS_BRANCH\ntest -f tool.sh\n");
+  chmodSync(join(tools, ".trellis/ci"), 0o755);
+  run(tools, "add", "-A");
+  run(tools, "commit", "-q", "-m", "ci");
+  gitWith(helperEnv(authorNode), tools, "push", "-q", "origin", "main");
+  const ciTip = run(tools, "rev-parse", "main");
+  trellis(helperEnv(authorNode), tools, "ci", "--once");
+  trellis(helperEnv(authorNode, aliceKey), tools, "check", "lint", "fail", "--summary", "not a runner");
+  const tipChecks = await checksOn(await state(), carol.address, "tools", await records.card(await state(), carol.address, "tools"), ciTip);
+  assert.deepEqual(tipChecks.map((c) => [c.check, c.state, c.by]), [["ci", "pass", carol.address]]);
+  assert.match(tipChecks[0].summary, /checking origin\/main/);
+  console.log("ci: .trellis/ci run on the tip and its result posted; a stranger's check not counted");
+
+  // A private repo: sealed blocks; its owner and a reader clone it, nobody
+  // else can; a dropped reader can't read what is pushed after.
+  const vault = newRepo(join(work, "vault"));
+  writeFileSync(join(vault, "plans.txt"), "secret plans\n");
+  run(vault, "add", "-A");
+  run(vault, "commit", "-q", "-m", "the plans");
+  run(vault, "remote", "add", "origin", `trellis::${carol.address}/vault`);
+  trellis(helperEnv(authorNode), vault, "private");
+  gitWith(helperEnv(authorNode), vault, "push", "-q", "origin", "main");
+  const vaultHead = await records.refs(sdk, await state(), carol.address, "vault");
+  const sealedBytes = Buffer.from(await blockReader(sdk, load).object(vaultHead.get("refs/heads/main")).then(() => "", (e) => e.message));
+  assert.match(sealedBytes.toString(), /not a git object block/, "a node sees no git object, only a sealed block");
+  await until("the reader's node has the vault", async () => (await records.refs(sdk, await state(readerNode), carol.address, "vault")).has("refs/heads/main"));
+  const vaultClone = join(work, "vault-clone");
+  gitWith(helperEnv(readerNode), work, "clone", "-q", `trellis::${carol.address}/vault`, vaultClone);
+  assert.equal(readFileSync(join(vaultClone, "plans.txt"), "utf8"), "secret plans\n");
+  assert.match(gitFails(helperEnv(readerNode, aliceKey), work, "clone", "-q", `trellis::${carol.address}/vault`, join(work, "vault-alice")), /isn't one of its members/);
+  trellis(helperEnv(authorNode), vault, "readers", "add", alice.address);
+  await until("the reader's node has Alice as a reader", async () => (await records.card(await state(readerNode), carol.address, "vault"))?.readers?.includes(alice.address));
+  const aliceVault = join(work, "vault-alice2");
+  gitWith(helperEnv(readerNode, aliceKey), work, "clone", "-q", `trellis::${carol.address}/vault`, aliceVault);
+  assert.equal(readFileSync(join(aliceVault, "plans.txt"), "utf8"), "secret plans\n");
+  run(aliceVault, "config", "user.name", "Alice");
+  run(aliceVault, "config", "user.email", "alice@example.com");
+  run(aliceVault, "commit", "-q", "--allow-empty", "-m", "by a reader");
+  assert.match(gitFails(helperEnv(authorNode, aliceKey), aliceVault, "push", "origin", "main"), /not one of .* maintainers/);
+  trellis(helperEnv(authorNode), vault, "readers", "remove", alice.address);
+  writeFileSync(join(vault, "plans.txt"), "newer secret plans\n");
+  run(vault, "commit", "-q", "-am", "newer plans");
+  gitWith(helperEnv(authorNode), vault, "push", "-q", "origin", "main");
+  await until("the reader's node has the newer plans", async () => (await records.refs(sdk, await state(readerNode), carol.address, "vault")).get("refs/heads/main") !== vaultHead.get("refs/heads/main"));
+  assert.match(gitFails(helperEnv(readerNode, aliceKey), aliceVault, "fetch", "origin"), /one of its members/);
+  gitWith(helperEnv(readerNode), vaultClone, "pull", "-q", "--ff-only");
+  assert.equal(readFileSync(join(vaultClone, "plans.txt"), "utf8"), "newer secret plans\n");
+  console.log("private: sealed blocks; members clone, others can't; a dropped reader can't fetch what came after");
 
   // trellis import: a SHA-1 repository on master, signed, then pushed whole.
   const old = join(work, "old-project");

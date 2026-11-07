@@ -8,8 +8,8 @@
 //   LATTICE=<lattice-node>/.build/debug/lattice \
 //   LATTICE_WALLET_WEB=<selfhold-wallet>/dist-web node --test e2e/ui/collab.test.mjs
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { createReadStream, mkdirSync, mkdtempSync, statSync, writeFileSync } from "node:fs";
+import { execFileSync, spawn } from "node:child_process";
+import { createReadStream, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { extname, join, normalize, resolve } from "node:path";
@@ -17,6 +17,8 @@ import { after, before, test as nodeTest } from "node:test";
 import { chromium, expect as baseExpect } from "@playwright/test";
 import * as sdk from "../../vendor/lattice-sdk.js";
 import * as collab from "../../client/collab.mjs";
+import * as records from "../../client/records.mjs";
+import { delegation } from "../../client/team.mjs";
 import { sponsored } from "../../client/sponsor.mjs";
 import { changes, transaction } from "../../client/write.mjs";
 import { CHAIN, account, here, start, state, until } from "../stack.mjs";
@@ -129,7 +131,7 @@ before(async () => {
     if (location.origin === origin) window.close = () => {};
   }, walletOrigin);
   await context.addInitScript(() => {
-    if (location.port !== "29200") return;
+    if (location.port !== "29200" && location.port !== "29271") return; // the page, and trellis's signing page
     const open = window.open.bind(window);
     window.open = (url, _name, features) => {
       const to = new URL(url);
@@ -139,14 +141,23 @@ before(async () => {
       return open(to.href, "selfhold-test", features);
     };
   });
+  // A page on another site (trellis's signing page) opens a new Selfhold
+  // window rather than reusing it: drive the newest, with the passkeys the
+  // last one's authenticator holds.
+  let authenticator;
   context.on("page", async (popup) => {
-    if (walletWindow || !(await popup.opener().catch(() => null))) return;
-    walletWindow = popup;
+    if (!(await popup.opener().catch(() => null))) return;
     const cdp = await context.newCDPSession(popup);
     await cdp.send("WebAuthn.enable");
-    await cdp.send("WebAuthn.addVirtualAuthenticator", {
+    const { authenticatorId } = await cdp.send("WebAuthn.addVirtualAuthenticator", {
       options: { protocol: "ctap2", transport: "internal", hasResidentKey: true, hasUserVerification: true, isUserVerified: true, hasPrf: true, automaticPresenceSimulation: true },
     });
+    if (authenticator) {
+      const { credentials } = await authenticator.cdp.send("WebAuthn.getCredentials", { authenticatorId: authenticator.authenticatorId });
+      for (const credential of credentials) await cdp.send("WebAuthn.addCredential", { authenticatorId, credential });
+    }
+    authenticator = { cdp, authenticatorId };
+    walletWindow = popup;
   });
   page = await context.newPage();
   page.on("pageerror", (error) => errors.push(error.message));
@@ -235,6 +246,31 @@ test("an issue: opened by Bob, labelled and closed by Carol, commented on and re
   await expect(page.locator(".issue-row .label")).toHaveText(["bug", "beds"]);
 });
 
+test("the inbox: Carol hears of Bob's issue and comment; Bob of Carol's reply", async () => {
+  const notes = await collab.inbox(await state(authorNode), carol.address);
+  assert.deepEqual(notes.map((n) => [n.kind, n.from, n.title]), [["comment", bob, "Weeds in the beds"], ["issue", bob, "Weeds in the beds"]]);
+  const id = collab.newId();
+  const time = Math.floor(Date.now() / 1000) + 1;
+  const post = { on: notes[0].thread, body: "Pulling them today.", time };
+  await writeAs(carol, [...collab.post(carol.address, id, post), ...collab.notify(carol.address, [bob, carol.address], time, id, { kind: "comment", repo: notes[0].repo, thread: post.on })]);
+  assert.deepEqual((await collab.inbox(await state(authorNode), bob)).map((n) => [n.kind, n.from]), [["comment", carol.address]], "Bob's inbox, as the chain has it");
+  const logged = [];
+  page.on("console", (m) => logged.push(m.text()));
+  await page.goto(appURL("/"));
+  try {
+    await expect(page.locator("#unread")).toHaveText(" 1");
+  } catch (error) {
+    error.message += `\n--- console: ${logged.join(" | ")}`;
+    throw error;
+  }
+  await page.getByRole("link", { name: /^Inbox/ }).click();
+  await expect(page.locator(".inbox-list li.unread")).toHaveCount(1);
+  await expect(page.locator(".inbox-list li")).toContainText(["commented on Weeds in the beds"]);
+  await expect(page.locator("#unread")).toHaveText("");
+  await page.locator(".inbox-list li a").first().click();
+  await expect(page.locator(".comment").last()).toContainText("Pulling them today.");
+});
+
 test("a write declined in Selfhold is not sent", async () => {
   await page.goto(appURL(`${garden()}/issues`));
   await page.locator(".issue-title").first().click();
@@ -244,7 +280,7 @@ test("a write declined in Selfhold is not sent", async () => {
   await page.bringToFront();
   await expect(page.locator(".comment-form .status")).toHaveText("You declined it in Selfhold. Nothing was sent.");
   await page.reload();
-  await expect(page.locator(".comment")).toHaveCount(2);
+  await expect(page.locator(".comment")).toHaveCount(3);
 });
 
 test("a pull request from Dave's fork: a line reviewed, merged by Carol's push, shown as merged", async () => {
@@ -274,10 +310,17 @@ test("a pull request from Dave's fork: a line reviewed, merged by Carol's push, 
   await page.getByRole("link", { name: "Conversation" }).click();
   await expect(page.locator(".comment").nth(1)).toContainText("on src/main.c line 2");
 
-  // Carol merges by pushing; the page sees main contains the branch.
-  git(carol, repo, "fetch", "-q", `trellis::${dave.address}/garden`, "fix");
-  git(carol, repo, "merge", "-q", "--ff-only", "FETCH_HEAD");
-  git(carol, repo, "push", "-q", "origin", "main");
+  // Not a maintainer, Bob sees no merge button. Carol makes him one; he
+  // merges in the page (a fast-forward, his own push); Carol drops him, and
+  // main stays where he put it.
+  await expect(page.locator('form[data-form="merge"]')).toHaveCount(0);
+  await writeAs(carol, records.repo(carol.address, "garden", { delegates: [bob] }));
+  await page.reload();
+  await approve(page.getByRole("button", { name: "Merge into main" }));
+  await expect(page.locator(".issue-head .state")).toHaveText("Merged", { timeout: 300_000 });
+  const now = await state(authorNode);
+  assert.equal((await records.words(sdk, now, carol.address, "garden")).get("refs/heads/main").by, bob);
+  await writeAs(carol, delegation(carol.address, "garden", { delegates: [bob] }, await records.words(sdk, now, carol.address, "garden"), []));
   await page.reload();
   await expect(page.locator(".issue-head .state")).toHaveText("Merged");
   await expect(page.locator(".event.merged")).toBeVisible();
@@ -297,7 +340,68 @@ test("releases: Carol's shown on her tags; Bob writes one on his fork", async ()
   await page.goto(appURL(`/${bob}/garden/tags`));
   await page.locator(".write-release summary").click();
   await page.locator(".write-release").getByLabel("Notes").fill("My own harvest.");
+  await page.locator(".write-release").getByLabel("Files").setInputFiles({ name: "seeds.txt", mimeType: "text/plain", buffer: Buffer.from("carrot, bean\n") });
   await approve(page.getByRole("button", { name: "Save the release" }));
   await expect(page.locator(".release")).toContainText("My own harvest.", { timeout: 300_000 });
+  await expect(page.locator(".release .assets a")).toHaveText(["seeds.txt"]);
+  const [download] = await Promise.all([page.waitForEvent("download"), page.locator(".release .assets a").click()]);
+  assert.equal(download.suggestedFilename(), "seeds.txt");
+  assert.equal(readFileSync(await download.path(), "utf8"), "carrot, bean\n");
+  assert.equal(BigInt((await account(authorNode, bob)).balance ?? 0), 0n, "Bob still holds no coins");
+});
+
+test("Bob pushes from the command line with Selfhold: one account in git and the page", async () => {
+  const home = mkdtempSync(join(tmpdir(), "trellis-home-"));
+  const env = { ...process.env, HOME: home, PATH: `${here("../bin")}:${process.env.PATH}`, TRELLIS_NODE: authorNode, TRELLIS_SPONSOR: sponsorURL, TRELLIS_CHAIN: CHAIN.join("/"), TRELLIS_WALLET: walletPage, TRELLIS_NO_BROWSER: "1", TRELLIS_SIGN_PORT: "29271", GIT_TERMINAL_PROMPT: "0" };
+  // Each step named, and given at most `seconds`, so a hang says where.
+  const step = async (what, promise, seconds = 120, more = () => "") => {
+    console.log(`cli: ${what}`);
+    let timer;
+    try {
+      return await Promise.race([promise, new Promise((_, reject) => (timer = setTimeout(() => reject(new Error(`cli: ${what}: no end in ${seconds} s${more()}`)), seconds * 1000)))]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+  // A command that stops to ask Selfhold: the URL it prints, and its end.
+  const cli = (command, args, cwd = home) => {
+    const child = spawn(command, args, { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
+    let err = "";
+    child.stdout.on("data", (d) => (out += d));
+    const url = new Promise((resolve) => child.stderr.on("data", (d) => {
+      err += d;
+      const found = /approve in Selfhold: (http:\/\/\S+)/.exec(err);
+      if (found) resolve(found[1]);
+    }));
+    const done = new Promise((resolve, reject) => child.on("exit", (code) => (code === 0 ? resolve(out) : reject(new Error(`${command} ${args.join(" ")} exited ${code}: ${err}`)))));
+    return { url, done, said: () => `\n--- its stderr: ${err}\n--- its stdout: ${out}`, stop: () => child.kill() };
+  };
+  const login = cli(here("../bin/trellis"), ["login"]);
+  try {
+    await page.goto(await step("trellis login prints its URL", login.url, 60, login.said));
+    const opened = await step("Selfhold's window opens for the login", inSelfhold(page.getByRole("button", { name: "Approve in Selfhold" })), 60);
+    await opened.getByRole("button", { name: "Connect", exact: true }).click();
+    await page.bringToFront();
+    assert.match(await step("trellis login ends", login.done, 60, login.said), new RegExp(`signed in as ${bob}`));
+  } finally {
+    login.stop();
+  }
+
+  const clone = join(home, "garden");
+  execFileSync("git", ["clone", "-q", `trellis::${bob}/garden`, clone], { env, timeout: 300_000 });
+  execFileSync("git", ["-C", clone, "-c", "user.name=Bob", "-c", "user.email=bob@example.com", "commit", "-q", "--allow-empty", "-m", "from Bob's terminal"], { env });
+  const push = cli("git", ["-C", clone, "push", "-q", "origin", "main"]);
+  try {
+    await page.goto(await step("git push prints its URL", push.url, 120, push.said));
+    await step("Selfhold approves the push", approve(page.getByRole("button", { name: "Approve in Selfhold" })), 60);
+    await step("git push ends", push.done, 400, push.said);
+  } finally {
+    push.stop();
+  }
+  const head = execFileSync("git", ["-C", clone, "rev-parse", "main"], { encoding: "utf8" }).trim();
+  await page.goto(appURL(`/${bob}/garden/commits/main`));
+  await expect(page.locator(".commit-row .subject").first()).toHaveText("from Bob's terminal", { timeout: 120_000 });
+  await expect(page.locator(".commit-row .id").first()).toHaveText(head.slice(0, 10));
   assert.equal(BigInt((await account(authorNode, bob)).balance ?? 0), 0n, "Bob still holds no coins");
 });

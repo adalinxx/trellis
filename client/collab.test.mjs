@@ -99,3 +99,44 @@ test("labels as typed", () => {
   assert.deepEqual(collab.labelsOf(" bug, good first issue ,bug,, "), ["bug", "good first issue"]);
   assert.match(collab.newId(), /^[0-9a-f]{16}$/);
 });
+
+test("an inbox holds the notes whose records are there, newest first", async () => {
+  const { inbox, notify, concerned, mentions } = collab;
+  const card = { delegates: ["dana"] };
+  const writes = [];
+  const add = (w) => writes.push(...w);
+  const issue = { repo: "olga/r", title: "Bug", body: "it breaks, @erin", time: 100 };
+  add(collab.issue("bob", "00000000000000a1", issue));
+  let state = memory(writes);
+  add(notify("bob", await concerned(state, "olga", "r", card, undefined, ["erin-acct"]), 100, "00000000000000a1", { kind: "issue", repo: "olga/r", thread: "bob/00000000000000a1" }));
+  add(collab.post("carol", "00000000000000c1", { on: "bob/00000000000000a1", body: "same here", time: 200 }));
+  state = memory(writes);
+  add(notify("carol", await concerned(state, "olga", "r", card, { author: "bob", id: "00000000000000a1" }), 200, "00000000000000c1", { kind: "comment", repo: "olga/r", thread: "bob/00000000000000a1" }));
+  add(collab.post("dana", "00000000000000d1", { on: "bob/00000000000000a1", body: "fixing", time: 300 }));
+  state = memory(writes);
+  add(notify("dana", await concerned(state, "olga", "r", card, { author: "bob", id: "00000000000000a1" }), 300, "00000000000000d1", { kind: "comment", repo: "olga/r", thread: "bob/00000000000000a1" }));
+  // A note naming a comment that isn't there, and one lying about its kind.
+  add([[collab.inboxKey("bob", 400, "00000000000000e1", "mallory"), JSON.stringify({ kind: "comment", repo: "olga/r", thread: "bob/00000000000000a1" })]]);
+  add([[collab.inboxKey("bob", 500, "00000000000000c1", "carol"), JSON.stringify({ kind: "review", repo: "olga/r", thread: "bob/00000000000000a1" })]]);
+  state = memory(writes);
+  assert.deepEqual((await inbox(state, "olga")).map((n) => [n.kind, n.from]), [["comment", "dana"], ["comment", "carol"], ["issue", "bob"]], "the owner hears of everything");
+  assert.deepEqual((await inbox(state, "erin-acct")).map((n) => n.from), ["bob"], "mentioned");
+  assert.deepEqual((await inbox(state, "bob")).map((n) => [n.from, n.body]), [["dana", "fixing"], ["carol", "same here"]]);
+  assert.deepEqual((await inbox(state, "carol")).map((n) => n.from), ["dana"], "a commenter hears of later comments");
+  assert.deepEqual((await inbox(state, "dana")).map((n) => n.from), ["carol", "bob"], "a maintainer hears of all but their own");
+  assert.deepEqual(mentions("hi @erin and @bob_2, mail a@b.com, @erin again"), ["erin", "bob_2"]);
+});
+
+test("a release's files are listed as written, or the release isn't read", async () => {
+  const cid = "bafyreiaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const files = [{ name: "tool-1.0.tar.gz", cid, size: 1234 }];
+  const state = memory([
+    ...collab.release("carol", "garden", "v1", { notes: "n", time: 5, files }),
+    ...collab.release("carol", "garden", "v2", { notes: "n", time: 5, files: [{ name: "../x", cid, size: 1 }] }),
+    ...collab.release("carol", "garden", "v3", { notes: "n", time: 5, files: [{ name: "a", cid: "nope", size: 1 }] }),
+  ]);
+  const got = await collab.releases(state, "carol", "garden", {});
+  assert.deepEqual(got.get("v1").files, files);
+  assert.equal(got.has("v2"), false);
+  assert.equal(got.has("v3"), false);
+});

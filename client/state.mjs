@@ -55,6 +55,40 @@ export function anyHost(transports) {
   };
 }
 
+/**
+ * Volumes from whichever of `hosts` (HTTPVolumeTransports) holds them. Each
+ * batch of CIDs is asked of every host's batch endpoint at once, which answers
+ * only what that node holds, so a node that would have to fetch a block from
+ * its peers is never waited on while another node has it. A CID none holds
+ * goes to `fallback`, which may fetch from peers.
+ */
+export function heldFirst(hosts, fallback, { batch = 32 } = {}) {
+  let queue = [];
+  const run = async (items) => {
+    const cids = [...new Set(items.map((item) => item.cid))];
+    let open = items;
+    // Each block as soon as any host answers with it; the slowest host holds up only what no other has.
+    await Promise.all(
+      (await hosts()).map(async (host) => {
+        const answer = await host.getVolumes(cids).catch(() => new Map());
+        open = open.filter((item) => (answer.get(item.cid) ? void item.resolve(answer.get(item.cid)) : true));
+      }),
+    );
+    for (const item of open) fallback.getVolume(item.cid, item.signal).then(item.resolve, item.reject);
+  };
+  const flush = () => {
+    const taken = queue;
+    queue = [];
+    for (let i = 0; i < taken.length; i += batch) run(taken.slice(i, i + batch)).catch((error) => taken.slice(i, i + batch).forEach((item) => item.reject(error)));
+  };
+  return {
+    getVolume: (cid, signal) =>
+      new Promise((resolve, reject) => {
+        if (queue.push({ cid, signal, resolve, reject }) === 1) setTimeout(flush, 0);
+      }),
+  };
+}
+
 function childFor(node, rest) {
   const first = String.fromCodePoint(rest.codePointAt(0));
   return node.children.find((child) => child.key === first)?.value.rawCID;
