@@ -142,6 +142,7 @@ before(async () => {
     };
   });
   context.on("page", async (popup) => {
+    if (walletWindow && (await popup.opener().catch(() => null))) console.log(`another popup, not the Selfhold window the test drives: ${popup.url()}`);
     if (walletWindow || !(await popup.opener().catch(() => null))) return;
     walletWindow = popup;
     const cdp = await context.newCDPSession(popup);

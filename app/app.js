@@ -760,7 +760,8 @@ function conversation(route, issue, comments, status, isMaintainer, compared) {
   // merge commit is needed, made in a clone: the page can't name a new tree
   // without the git ids of everything beside what changed.
   const fastForward = compared && compared.mergeBase === status.baseCommit;
-  const commands = `<pre class="cmd">git fetch trellis::${esc(collab.headOf(issue.head).owner)}/${esc(collab.headOf(issue.head).name)} ${esc(collab.headOf(issue.head).branch)}
+  const from = collab.headOf(issue.head ?? "");
+  const commands = !from ? "" : `<pre class="cmd">git fetch trellis::${esc(from.owner)}/${esc(from.name)} ${esc(from.branch)}
 git checkout ${esc(issue.base)} && git merge FETCH_HEAD
 git push origin ${esc(issue.base)}</pre>`;
   const howToMerge = status.state !== "open" || !compared || !isMaintainer ? "" : fastForward
