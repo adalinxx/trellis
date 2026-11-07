@@ -184,6 +184,19 @@ GitHub URLs, so running it again writes only what changed (and finishes an
 import that stopped). It needs no coins. GitHub lets it make 60 requests an
 hour without `GITHUB_TOKEN`, 100 issues or comments each.
 
+To keep a GitHub copy while a team moves (so CI and tools that only know
+SHA-1 keep working), from a Trellis clone:
+
+```sh
+trellis export https://github.com/<org>/<repo>.git   # branches and tags, as SHA-1; again: only what is new
+```
+
+It is `trellis import` in reverse, by `git fast-export` and `fast-import`,
+with marks kept in `.git/trellis/export`. History that came from SHA-1 comes
+back with its old ids (signatures aside: they were stripped on import), so
+GitHub's copy of an imported repo keeps its commits. Branches and tags
+deleted here are deleted there.
+
 Each setting can also come from the environment: `TRELLIS_NODE`,
 `TRELLIS_SPONSOR`, `TRELLIS_KEY`, `TRELLIS_CHAIN` (`Nexus/trellis` by
 default). `trellis.node` may list several nodes, comma-separated: blocks are

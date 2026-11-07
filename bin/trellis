@@ -6,6 +6,8 @@
 // trellis maintainers [add|remove <address>]: who besides the owner may push.
 // trellis release <tag> [--title <t>] [--notes <text>] [<file>...]: a release
 // with files, by a maintainer. See client/team.mjs.
+// trellis export <git url>: branches and tags, as SHA-1, pushed there (a
+// GitHub mirror, say). See client/export.mjs.
 // trellis login: sign with Selfhold, the account the page uses, from now on.
 // See client/signer.mjs.
 // trellis mirror <sponsor>: every block of the repo kept by that sponsor too.
@@ -16,8 +18,9 @@ import { importRepository } from "../client/import.mjs";
 import { importIssues } from "../client/github.mjs";
 import { maintainers, mirror, release } from "../client/team.mjs";
 import { login } from "../client/signer.mjs";
+import { exportTo } from "../client/export.mjs";
 
-const usage = "usage: trellis import <github url or path> [<directory>]\n       trellis import-issues <github url>   (in a repository whose origin is trellis::)\n       trellis maintainers [add|remove <address>]   (likewise)\n       trellis mirror <sponsor url>   (likewise; in an up-to-date clone)\n       trellis login   (sign with Selfhold instead of a key file)\n       trellis release <tag> [--title <title>] [--notes <text>] [<file>...]   (in a repository whose origin is trellis::)";
+const usage = "usage: trellis import <github url or path> [<directory>]\n       trellis import-issues <github url>   (in a repository whose origin is trellis::)\n       trellis maintainers [add|remove <address>]   (likewise)\n       trellis mirror <sponsor url>   (likewise; in an up-to-date clone)\n       trellis login   (sign with Selfhold instead of a key file)\n       trellis release <tag> [--title <title>] [--notes <text>] [<file>...]   (in a repository whose origin is trellis::)\n       trellis export <git url>   (in a Trellis clone: its branches and tags as SHA-1, pushed there)";
 const [command, source, directory] = process.argv.slice(2);
 const configured = (key) => {
   try {
@@ -64,6 +67,13 @@ if (command === "import" && source) {
   }
   const gitDir = resolve(execFileSync("git", ["rev-parse", "--git-dir"], { encoding: "utf8" }).trim());
   release(gitDir, source, { ...options, say }).then(({ tag, files }) => process.stdout.write(`released ${tag}${files.length ? ` with ${files.map((f) => f.name).join(", ")}` : ""}\n`), fail);
+} else if (command === "export" && source) {
+  try {
+    const n = exportTo(process.cwd(), source, { say });
+    process.stdout.write(`${n} branches and tags pushed as SHA-1\n`);
+  } catch (error) {
+    fail(error);
+  }
 } else if (command === "login") {
   const urls = (process.env.TRELLIS_NODE ?? configured("trellis.node") ?? "").split(",").map((u) => u.trim()).filter(Boolean);
   login({ say, urls, sponsor: process.env.TRELLIS_SPONSOR ?? configured("trellis.sponsor")?.split(",")[0] }).then((address) => process.stdout.write(`signed in as ${address}: git push and trellis sign with Selfhold now (trellis.key = selfhold)\n`), fail);
