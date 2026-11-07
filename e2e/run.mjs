@@ -303,6 +303,8 @@ try {
   const aliceVault = join(work, "vault-alice2");
   gitWith(helperEnv(readerNode, aliceKey), work, "clone", "-q", `trellis::${carol.address}/vault`, aliceVault);
   assert.equal(readFileSync(join(aliceVault, "plans.txt"), "utf8"), "secret plans\n");
+  run(aliceVault, "config", "user.name", "Alice");
+  run(aliceVault, "config", "user.email", "alice@example.com");
   run(aliceVault, "commit", "-q", "--allow-empty", "-m", "by a reader");
   assert.match(gitFails(helperEnv(authorNode, aliceKey), aliceVault, "push", "origin", "main"), /not one of .* maintainers/);
   trellis(helperEnv(authorNode), vault, "readers", "remove", alice.address);

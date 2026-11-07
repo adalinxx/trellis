@@ -732,7 +732,7 @@ async function issuePage(route, state, card, refs) {
   const compared = pr && status.baseCommit && status.headCommit ? await chain.read.compare(status.baseCommit, status.headCommit) : undefined;
   const isMaintainer = me && collab.maintainers(route.owner, card).includes(me);
   const self = { view: route.view, owner: route.owner, name: route.name, author: route.author, id: route.id };
-  const head = collab.headOf(issue.head ?? "");
+  const head = pr ? collab.headOf(issue.head) : undefined;
   const top = `<div class="issue-head"><h2>${esc(issue.title)} <span class="muted id">#${esc(issue.id.slice(0, 7))}</span></h2>
     <p>${stateBadge(status.state)} ${byline(issue.author)} opened this ${esc(ago(issue.time))}${pr ? ` · wants to merge ${compared ? `${compared.commits.length} commit${compared.commits.length === 1 ? "" : "s"}` : "a branch"} into <code>${esc(issue.base)}</code> from <a href="${href({ view: "tree", owner: head.owner, name: head.name, ref: head.branch, path: "" })}"><code>${esc(label(issue.head))}</code></a>` : ""}</p>
     <div class="labels">${chips(issue.labels)}${isMaintainer ? `<details class="edit-labels"><summary>Labels</summary><form data-form="labels"><input type="text" name="labels" value="${esc(issue.labels.join(", "))}" placeholder="bug, help wanted"><div class="row2"><span class="status"></span><button class="btn small">Save labels</button></div></form></details>` : ""}</div></div>`;
