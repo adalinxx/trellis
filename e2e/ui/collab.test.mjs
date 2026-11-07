@@ -8,7 +8,7 @@
 //   LATTICE=<lattice-node>/.build/debug/lattice \
 //   LATTICE_WALLET_WEB=<selfhold-wallet>/dist-web node --test e2e/ui/collab.test.mjs
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createReadStream, mkdirSync, mkdtempSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -131,7 +131,7 @@ before(async () => {
     if (location.origin === origin) window.close = () => {};
   }, walletOrigin);
   await context.addInitScript(() => {
-    if (location.port !== "29200") return;
+    if (location.port !== "29200" && location.port !== "29271") return; // the page, and trellis's signing page
     const open = window.open.bind(window);
     window.open = (url, _name, features) => {
       const to = new URL(url);
@@ -325,5 +325,43 @@ test("releases: Carol's shown on her tags; Bob writes one on his fork", async ()
   await page.locator(".write-release").getByLabel("Notes").fill("My own harvest.");
   await approve(page.getByRole("button", { name: "Save the release" }));
   await expect(page.locator(".release")).toContainText("My own harvest.", { timeout: 300_000 });
+  assert.equal(BigInt((await account(authorNode, bob)).balance ?? 0), 0n, "Bob still holds no coins");
+});
+
+test("Bob pushes from the command line with Selfhold: one account in git and the page", async () => {
+  const home = mkdtempSync(join(tmpdir(), "trellis-home-"));
+  const env = { ...process.env, HOME: home, PATH: `${here("../bin")}:${process.env.PATH}`, TRELLIS_NODE: authorNode, TRELLIS_SPONSOR: sponsorURL, TRELLIS_CHAIN: CHAIN.join("/"), TRELLIS_WALLET: walletPage, TRELLIS_NO_BROWSER: "1", TRELLIS_SIGN_PORT: "29271", GIT_TERMINAL_PROMPT: "0" };
+  // A command that stops to ask Selfhold: the URL it prints, and its end.
+  const cli = (command, args, cwd = home) => {
+    const child = spawn(command, args, { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
+    let err = "";
+    child.stdout.on("data", (d) => (out += d));
+    const url = new Promise((resolve) => child.stderr.on("data", (d) => {
+      err += d;
+      const found = /approve in Selfhold: (http:\/\/\S+)/.exec(err);
+      if (found) resolve(found[1]);
+    }));
+    const done = new Promise((resolve, reject) => child.on("exit", (code) => (code === 0 ? resolve(out) : reject(new Error(`${command} ${args.join(" ")} exited ${code}: ${err}`)))));
+    return { url, done };
+  };
+  const login = cli(here("../bin/trellis"), ["login"]);
+  await page.goto(await login.url);
+  const opened = await inSelfhold(page.getByRole("button", { name: "Approve in Selfhold" }));
+  await opened.getByRole("button", { name: "Connect", exact: true }).click();
+  await page.bringToFront();
+  assert.match(await login.done, new RegExp(`signed in as ${bob}`));
+
+  const clone = join(home, "garden");
+  execFileSync("git", ["clone", "-q", `trellis::${bob}/garden`, clone], { env });
+  execFileSync("git", ["-C", clone, "-c", "user.name=Bob", "-c", "user.email=bob@example.com", "commit", "-q", "--allow-empty", "-m", "from Bob's terminal"], { env });
+  const push = cli("git", ["-C", clone, "push", "-q", "origin", "main"]);
+  await page.goto(await push.url);
+  await approve(page.getByRole("button", { name: "Approve in Selfhold" }));
+  await push.done;
+  const head = execFileSync("git", ["-C", clone, "rev-parse", "main"], { encoding: "utf8" }).trim();
+  await page.goto(appURL(`/${bob}/garden/commits/main`));
+  await expect(page.locator(".commit-row .subject").first()).toHaveText("from Bob's terminal");
+  await expect(page.locator(".commit-row .id").first()).toHaveText(head.slice(0, 10));
   assert.equal(BigInt((await account(authorNode, bob)).balance ?? 0), 0n, "Bob still holds no coins");
 });

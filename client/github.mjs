@@ -95,16 +95,12 @@ export async function githubListing(path, { token = process.env.GITHUB_TOKEN, pr
  */
 export async function importIssues(source, { gitDir, say = () => {}, chunk = 400_000 } = {}) {
   const { origin } = await import("./team.mjs");
-  const { setting } = await import("./remote.mjs");
   const repo = githubRepo(source);
   const target = await origin(gitDir);
   const { owner, name, chain, chainPath, sdk } = target;
-  const { address, privateKey } = target.signer();
-  if (address !== owner) throw new Error(`trellis.key isn't ${owner}'s, whose repo origin is`);
-  const sponsor = setting(gitDir, "sponsor", "TRELLIS_SPONSOR")?.split(",")[0].trim();
-  if (!sponsor) throw new Error("set trellis.sponsor (git config) first");
-  const { sponsored } = await import("./sponsor.mjs");
-  const { changes, transaction } = await import("./write.mjs");
+  const me = target.signer(say);
+  if (me.address !== owner) throw new Error(`trellis.key isn't ${owner}'s, whose repo origin is`);
+  const { changes } = await import("./write.mjs");
 
   say(`reading ${repo}'s issues and pull requests from GitHub`);
   const items = await githubListing(`/repos/${repo}/issues?state=all`, { progress: (n) => say(`  ${n} issues and pull requests`) });
@@ -127,9 +123,7 @@ export async function importIssues(source, { gitDir, say = () => {}, chunk = 400
   const wait = Number(process.env.TRELLIS_WAIT_SECONDS ?? 600) * 1000;
   for (const [i, batch] of batches.entries()) {
     say(`writing ${i + 1}/${batches.length}: ${batch.length} records, the fee paid with this machine's work`);
-    const draft = transaction({ owner, actions: batch, nonce: await chain.nonce(owner), chainPath });
-    const response = await chain.submit(await sponsored(sdk, sponsor, draft, privateKey));
-    if (!response.ok) throw new Error(`refused: ${(await response.text()).replace(/\s+/g, " ").slice(0, 300)}`);
+    await me.write(chain, chainPath, batch, `Import issues, ${i + 1} of ${batches.length}`);
     // Landed once its first and last records read back (a run again mends any gap).
     const ends = [batch[0], batch.at(-1)];
     for (const deadline = Date.now() + wait; ; ) {

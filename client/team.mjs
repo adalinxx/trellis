@@ -10,12 +10,10 @@ import * as records from "./records.mjs";
  */
 export async function origin(gitDir) {
   const sdk = await import("../vendor/lattice-sdk.js");
-  const { readFileSync } = await import("node:fs");
   const { execFileSync } = await import("node:child_process");
   const { chainAt, monikerAt, parseAddress, setting } = await import("./remote.mjs");
   const { addressOf } = await import("./names.mjs");
-  const { sponsored } = await import("./sponsor.mjs");
-  const { changes, transaction } = await import("./write.mjs");
+  const { changes } = await import("./write.mjs");
 
   const url = execFileSync("git", ["--git-dir", gitDir, "remote", "get-url", "origin"], { encoding: "utf8" }).trim();
   if (!url.startsWith("trellis::")) throw new Error(`origin is ${url}, not a trellis:: address`);
@@ -28,12 +26,8 @@ export async function origin(gitDir) {
   const owner = await addressOf(moniker, parsed.owner);
   const chainPath = (get("chain", "TRELLIS_CHAIN") ?? "Nexus/trellis").split("/");
   const chain = chainAt(urls, chainPath);
-  const signer = () => {
-    const keyFile = get("key", "TRELLIS_KEY");
-    if (!keyFile) throw new Error("set trellis.key (git config) first");
-    const privateKey = sdk.hexToBytes(JSON.parse(readFileSync(keyFile, "utf8")).privateKey);
-    return { privateKey, address: sdk.accountFromPrivateKey(privateKey).address };
-  };
+  const { signer: signerOf } = await import("./signer.mjs");
+  const signer = (say) => signerOf(sdk, gitDir, { urls, say });
   return {
     sdk,
     owner,
@@ -44,16 +38,11 @@ export async function origin(gitDir) {
     /** `who` (an address or @handle) as an address. */
     addressOf: (who) => addressOf(moniker, who),
     /** Writes `[key, value]` pairs as the key's account; resolves once they read back. */
-    async write(writes, { say = () => {}, wait = Number(process.env.TRELLIS_WAIT_SECONDS ?? 600) * 1000 } = {}) {
-      const sponsor = get("sponsor", "TRELLIS_SPONSOR");
-      if (!sponsor) throw new Error("set trellis.sponsor (git config) first");
-      const { privateKey, address } = signer();
+    async write(writes, { say = () => {}, what, wait = Number(process.env.TRELLIS_WAIT_SECONDS ?? 600) * 1000 } = {}) {
       const actions = await changes(await chain.state(), writes);
       if (!actions.length) return 0;
       say(`writing ${actions.length} records, the fee paid with this machine's work`);
-      const draft = transaction({ owner: address, actions, nonce: await chain.nonce(address), chainPath });
-      const response = await chain.submit(await sponsored(sdk, sponsor, draft, privateKey));
-      if (!response.ok) throw new Error(`refused: ${(await response.text()).replace(/\s+/g, " ").slice(0, 300)}`);
+      await signer(say).write(chain, chainPath, actions, what);
       for (const deadline = Date.now() + wait; ; ) {
         await new Promise((resolve) => setTimeout(resolve, 2000));
         const state = await chain.state().catch(() => undefined);

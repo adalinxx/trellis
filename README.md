@@ -28,6 +28,13 @@ git push origin main
 git clone trellis::<owner address>/<repo>                 # needs only trellis.node (or TRELLIS_NODE)
 ```
 
+Instead of a key file, git and `trellis` can sign with
+[Selfhold](https://github.com/adalinxx/selfhold-wallet), the account you use
+in the page: `trellis login` once, and each write after that opens a page on
+`127.0.0.1` that asks Selfhold's window to approve it, as `gh auth login
+--web` does. It sets `trellis.key` to `selfhold` and keeps the account in
+`trellis.account` (global git config).
+
 ### Testnet
 
 Trellis runs on testnet as `Nexus/testnet/trellis`, served publicly by

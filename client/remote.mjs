@@ -25,10 +25,11 @@ import { git, objectReader, objectsBetween, requireSha256, store } from "./git.m
 import { readObject } from "./objects.mjs";
 import { addressOf } from "./names.mjs";
 import * as records from "./records.mjs";
-import { keep, sponsored, storageChain } from "./sponsor.mjs";
+import { keep, storageChain } from "./sponsor.mjs";
 import { anyHost, heldFirst, tip, view, volumeLoader } from "./state.mjs";
 import { encode, fetchObjects } from "./transfer.mjs";
-import { changes, transaction } from "./write.mjs";
+import { changes } from "./write.mjs";
+import { signer } from "./signer.mjs";
 
 const say = (line) => process.stderr.write(`trellis: ${line}\n`);
 
@@ -243,14 +244,16 @@ export async function main(argv = process.argv.slice(2)) {
 
   async function pushFrom(specs) {
     requireSha256(gitDir);
-    const keyFile = setting(gitDir, "key", "TRELLIS_KEY");
     const sponsors = (setting(gitDir, "sponsor", "TRELLIS_SPONSOR") ?? "").split(",").map((u) => u.trim()).filter(Boolean);
     const sponsor = sponsors[0];
     const fail = (why) => specs.map((spec) => `error ${spec.split(":")[1]} ${why}\n`).join("");
-    if (!keyFile) return fail("no key: set trellis.key (git config) or TRELLIS_KEY to a key file");
     if (!sponsor) return fail("no sponsor: set trellis.sponsor (git config) or TRELLIS_SPONSOR");
-    const key = JSON.parse(readFileSync(keyFile, "utf8"));
-    const me = sdk.accountFromPrivateKey(sdk.hexToBytes(key.privateKey));
+    let me;
+    try {
+      me = signer(sdk, gitDir, { say, urls });
+    } catch (error) {
+      return fail(error.message);
+    }
     const refs = await remoteRefs();
     if (!records.maintainers(owner, card).includes(me.address)) {
       return fail(`this key is ${me.address}, not one of ${owner}/${name}'s maintainers; push to trellis::${me.address}/${name}`);
@@ -325,12 +328,11 @@ export async function main(argv = process.argv.slice(2)) {
     const actions = await changes(state, writes);
     if (actions.length > 0) {
       say("writing refs, the fee paid with this machine's work");
-      const draft = transaction({ owner: me.address, actions, nonce: await chain.nonce(me.address), chainPath });
-      const payload = await sponsored(sdk, sponsor, draft, sdk.hexToBytes(key.privateKey));
-      const response = await chain.submit(payload);
-      if (!response.ok) {
-        const why = (await response.text()).replace(/\s+/g, " ").slice(0, 200);
-        return updates.map(({ dst }) => `error ${dst} refused: ${why}\n`).join("") + replies.filter((r) => r.startsWith("error")).join("");
+      try {
+        await me.write(chain, chainPath, actions, `Push to ${parsed.owner}/${name}`);
+      } catch (error) {
+        const why = error.message.replace(/\s+/g, " ").slice(0, 200);
+        return updates.map(({ dst }) => `error ${dst} ${why}\n`).join("") + replies.filter((r) => r.startsWith("error")).join("");
       }
       await waitFor("the refs to be mined", async () => {
         const now = await chain.state();
