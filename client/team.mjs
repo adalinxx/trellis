@@ -64,7 +64,7 @@ export function delegation(owner, name, card, words, delegates) {
     ...records.repo(owner, name, { ...card, delegates }),
     ...[...words]
       .filter(([, word]) => !keep.has(word.by))
-      .flatMap(([ref, word]) => records.ref(owner, name, ref, word.commit ?? undefined, { seq: word.seq + 1 })),
+      .flatMap(([ref, word]) => records.ref(owner, name, ref, word.commit ?? undefined, { seq: records.nextSeq(word.seq) })),
   ];
 }
 
@@ -111,6 +111,21 @@ export async function mirror(gitDir, sponsor, { say = () => {} } = {}) {
     }
   });
   if (missing.length) throw new Error(`this clone lacks ${missing.map(([ref]) => ref).join(", ")}: git fetch origin first`);
+  if (sealer) {
+    // A private repo's blocks may be sealed with older keys than this clone
+    // would seal with: keep them as the chain has them, every block walked
+    // (and checked) from its refs.
+    const { fetchObjects } = await import("./transfer.mjs");
+    const sealed = new Map();
+    await fetchObjects(sdk, async (cid) => {
+      const bytes = await chain.block(cid);
+      sealed.set(cid, bytes);
+      return bytes;
+    }, ids.map(([, , cid]) => cid), new Map(), { sealer });
+    const volumes = [...sealed].map(([cid, bytes]) => ({ cid, entries: { [cid]: Buffer.from(bytes).toString("base64") } }));
+    await keepAll(sdk, sponsor, chainPath, volumes, say);
+    return volumes.length;
+  }
   const known = new Map();
   const objects = objectReader(gitDir);
   let volumes;
@@ -210,6 +225,7 @@ export async function release(gitDir, tag, { title, notes = "", files = [], say 
   const me = repo.signer(say).address;
   const card = await records.card(await chain.state(), owner, name);
   if (!records.maintainers(owner, card).includes(me)) throw new Error(`${me} isn't one of ${owner}/${name}'s maintainers`);
+  await refusePrivate(card, "releases", owner, name);
   if (!(await records.refs(sdk, await chain.state(), owner, name, card ?? null)).has(`refs/tags/${tag}`)) throw new Error(`${owner}/${name} has no tag ${tag}: push it first`);
   const sponsors = (setting(gitDir, "sponsor", "TRELLIS_SPONSOR") ?? "").split(",").map((u) => u.trim()).filter(Boolean);
   if (files.length && !sponsors.length) throw new Error("set trellis.sponsor (git config) first: it keeps the files");
@@ -242,6 +258,7 @@ export async function postCheck(gitDir, name, state, { summary, url, commit = "H
   const { execFileSync } = await import("node:child_process");
   const { check } = await import("./checks.mjs");
   const repo = await origin(gitDir);
+  await refusePrivate(await records.card(await repo.chain.state(), repo.owner, repo.name), "checks", repo.owner, repo.name);
   const id = execFileSync("git", ["--git-dir", gitDir, "rev-parse", `${commit}^{commit}`], { encoding: "utf8" }).trim();
   const me = repo.signer(say).address;
   await repo.write(check(me, repo.owner, repo.name, id, name, { state, summary, url, time: Math.floor(Date.now() / 1000) }), { say, what: `Check ${name}: ${state}` });
@@ -284,6 +301,7 @@ export async function runCI(gitDir, { once = false, every = 60, check: checkName
   for (;;) {
     g("fetch", "--quiet", "--prune", "origin");
     const card = await records.card(await repo.chain.state(), repo.owner, repo.name);
+    await refusePrivate(card, "checks", repo.owner, repo.name);
     // Each tip once, under the first branch at it (origin/HEAD is not a branch).
     const tips = new Map();
     for (const line of g("for-each-ref", "--format=%(objectname) %(refname)", "refs/remotes/origin").split("\n")) {
@@ -294,9 +312,16 @@ export async function runCI(gitDir, { once = false, every = 60, check: checkName
       const done = (await checks(await repo.chain.state(), repo.owner, repo.name, { ...card, runners: [me] }, id)).some((c) => c.check === checkName && c.by === me);
       if (done) continue;
       const post = (state, summary) => repo.write(check(me, repo.owner, repo.name, id, checkName, { state, summary, time: Math.floor(Date.now() / 1000) }), { say, what: `CI ${branch}` });
+      // The commit's files only, with no .git link to this clone, no git
+      // config and none of this process's environment: the code run can't
+      // reach the runner's key or push as it.
       const dir = mkdtempSync(join(tmpdir(), "trellis-ci-"));
+      const home = mkdtempSync(join(tmpdir(), "trellis-ci-home-"));
       try {
-        g("worktree", "add", "--quiet", "--detach", dir, id);
+        const archive = spawnSync("git", ["--git-dir", gitDir, "archive", "--format=tar", id], { maxBuffer: 1 << 30 });
+        if (archive.status !== 0) throw new Error(`git archive ${id}: ${archive.stderr}`);
+        const untar = spawnSync("tar", ["-x", "-C", dir], { input: archive.stdout });
+        if (untar.status !== 0) throw new Error(`tar: ${untar.stderr}`);
         if (!existsSync(join(dir, ".trellis/ci"))) {
           say(`${branch} ${id.slice(0, 10)}: no .trellis/ci, nothing to run`);
           await post("pass", "No .trellis/ci in this commit: nothing to run.");
@@ -304,17 +329,24 @@ export async function runCI(gitDir, { once = false, every = 60, check: checkName
         }
         say(`${branch} ${id.slice(0, 10)}: running .trellis/ci`);
         await post("pending", `Running on ${me}.`);
-        const ran = spawnSync(join(dir, ".trellis/ci"), [], { cwd: dir, encoding: "utf8", maxBuffer: 64 << 20, timeout: 3600_000, env: { ...process.env, TRELLIS_KEY: "", CI: "true", TRELLIS_COMMIT: id, TRELLIS_BRANCH: branch } });
+        const env = { PATH: process.env.PATH, HOME: home, LANG: process.env.LANG ?? "C.UTF-8", TMPDIR: home, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", CI: "true", TRELLIS_COMMIT: id, TRELLIS_BRANCH: branch };
+        const ran = spawnSync(join(dir, ".trellis/ci"), [], { cwd: dir, encoding: "utf8", maxBuffer: 64 << 20, timeout: 3600_000, env });
         const output = `${ran.stdout ?? ""}${ran.stderr ?? ""}`.trim().split("\n").slice(-20).join("\n");
         const ok = ran.status === 0;
         say(`${branch} ${id.slice(0, 10)}: ${ok ? "pass" : "fail"}`);
         await post(ok ? "pass" : "fail", `${ok ? "Passed" : ran.error ? `Didn't run: ${ran.error.message}` : `Exited ${ran.status ?? ran.signal}`}.\n\n${output}`.slice(0, 2000));
       } finally {
-        spawnSync("git", ["--git-dir", gitDir, "worktree", "remove", "--force", dir]);
         rmSync(dir, { recursive: true, force: true });
+        rmSync(home, { recursive: true, force: true });
       }
     }
     if (once) return;
     await new Promise((resolve) => setTimeout(resolve, every * 1000));
   }
+}
+
+/** Releases and checks are public records: a private repo has none. */
+async function refusePrivate(card, what, owner, name) {
+  const { isPrivate } = await import("./private.mjs");
+  if (isPrivate(card)) throw new Error(`${owner}/${name} is private, and ${what} are public records on the chain: it has none`);
 }

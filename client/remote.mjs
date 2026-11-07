@@ -197,6 +197,7 @@ export async function main(argv = process.argv.slice(2)) {
     remote = new Map();
     const state = await chain.state();
     card = await records.card(state, owner, name);
+    sealing = undefined; // the card's newest key, as it is now
     for (const [ref, word] of await records.words(sdk, state, owner, name, card ?? null)) {
       if (!word.commit) {
         remote.set(ref, { seq: word.seq });
@@ -342,7 +343,7 @@ export async function main(argv = process.argv.slice(2)) {
       ...(card ? [] : records.repo(owner, name, {})),
       // A key-file account publishes its box key once, so it can be made a member of private repos.
       ...(me.privateKey && !(await boxOf(state, me.address)) ? publishBox(me.address, me.privateKey) : []),
-      ...moved.flatMap(({ dst, id }) => records.ref(owner, name, dst, id && known.get(id), { as: me.address, seq: (refs.get(dst)?.seq ?? 0) + 1 })),
+      ...moved.flatMap(({ dst, id }) => records.ref(owner, name, dst, id && known.get(id), { as: me.address, seq: records.nextSeq(refs.get(dst)?.seq ?? 0) })),
     ];
     const actions = await changes(state, writes);
     if (actions.length > 0) {

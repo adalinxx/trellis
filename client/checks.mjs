@@ -34,7 +34,7 @@ export const runners = (owner, card) => [...new Set([...maintainers(owner, card)
  * The checks on `commit`, by check name: `[{ check, by, state, summary?, url?, time }]`,
  * the latest per name among the repo's runners.
  */
-export async function checks(state, owner, name, card, commit) {
+export async function checks(state, owner, name, card, commit, { now = Math.floor(Date.now() / 1000) } = {}) {
   if (!isId(commit)) return [];
   const latest = new Map();
   await Promise.all(runners(owner, card).map(async (r) => {
@@ -47,7 +47,8 @@ export async function checks(state, owner, name, card, commit) {
       } catch {
         continue;
       }
-      if (!NAME.test(checkName) || !STATES.has(record?.state) || !Number.isSafeInteger(record.time)) continue;
+      // A result dated ahead of now would outrank every later one: left out.
+      if (!NAME.test(checkName) || !STATES.has(record?.state) || !Number.isSafeInteger(record.time) || record.time > now + 3600) continue;
       const found = { check: checkName, by: r, state: record.state, time: record.time, ...(typeof record.summary === "string" && { summary: record.summary }), ...(typeof record.url === "string" && /^https?:\/\//.test(record.url) && { url: record.url }) };
       const held = latest.get(checkName);
       if (!held || found.time > held.time || (found.time === held.time && found.by < held.by)) latest.set(checkName, found);

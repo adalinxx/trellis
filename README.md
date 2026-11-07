@@ -155,8 +155,11 @@ trellis check test pass --url <link>       # from any CI (GitHub Actions on an e
 `trellis ci` fetches `origin` every minute (`--once` for one pass), runs the
 commit's executable `.trellis/ci` in a scratch worktree with `CI=true`,
 `TRELLIS_COMMIT` and `TRELLIS_BRANCH` set, and posts pending, then pass or
-fail with the output's last lines. It runs the repo's own code: run it only
-for repos you trust, as with any CI runner.
+fail with the output's last lines. It runs the repo's own code, from the
+commit's files alone (no `.git`, no git config, a bare environment), but as
+your OS user: run it under an account of its own, holding only the runner's
+key, and only for repos you trust, as with any CI runner. Private repos have
+no checks or releases, since both are public records.
 
 ### Private repos
 

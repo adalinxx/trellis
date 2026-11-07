@@ -7,8 +7,8 @@
 // The nonce is an HMAC of the plaintext under the key, so a block always
 // seals to the same bytes (AES-GCM-SIV's idea, with plain GCM): pushes still
 // share blocks, a clone makes the CIDs the chain names, and only equal blocks
-// in the same repo look equal. A blob's file root keeps its size and chunk
-// count in the clear; its chunks are sealed.
+// in the same repo look equal. A big file's root and its chunks are each
+// sealed; how many blocks a file takes shows roughly how big it is.
 //
 // The repo key reaches each member sealed to their box key, an X25519 key
 // derived from their account key and published at user/<a>/box. Removing a

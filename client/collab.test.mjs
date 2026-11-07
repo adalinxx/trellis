@@ -124,6 +124,9 @@ test("an inbox holds the notes whose records are there, newest first", async () 
   assert.deepEqual((await inbox(state, "bob")).map((n) => [n.from, n.body]), [["dana", "fixing"], ["carol", "same here"]]);
   assert.deepEqual((await inbox(state, "carol")).map((n) => n.from), ["dana"], "a commenter hears of later comments");
   assert.deepEqual((await inbox(state, "dana")).map((n) => n.from), ["carol", "bob"], "a maintainer hears of all but their own");
+  // A note dated far ahead would sit on top for good: not read.
+  state = memory([...writes, [collab.inboxKey("bob", 999999999999, "00000000000000d1", "dana"), JSON.stringify({ kind: "comment", repo: "olga/r", thread: "bob/00000000000000a1" })]]);
+  assert.deepEqual((await inbox(state, "bob", { now: 1000 })).map((n) => n.time), [300, 200]);
   assert.deepEqual(mentions("hi @erin and @bob_2, mail a@b.com, @erin again"), ["erin", "bob_2"]);
 });
 

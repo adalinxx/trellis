@@ -142,7 +142,7 @@ async function inboxPage() {
   if (!me) return `<h1>Inbox</h1><p class="empty">Sign in to see who wrote to you.</p>`;
   const notes = await collab.inbox(await chain.state(), me);
   const before = seen();
-  if (notes.length) save(seenKey(), String(Math.max(before, notes[0].time)));
+  if (notes.length) save(seenKey(), String(Math.min(Math.max(before, notes[0].time), time())));
   countUnread();
   const what = { issue: "opened an issue", pull: "opened a pull request", comment: "commented on", review: "reviewed a line of" };
   const items = notes.map((n) => {

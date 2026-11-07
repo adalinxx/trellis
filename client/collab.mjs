@@ -145,13 +145,14 @@ export async function concerned(state, owner, name, card, thread, also = []) {
  * thread, title, body? }]`, each only if the issue or comment it names is
  * there, by whom the note says, on the thread and repo it says.
  */
-export async function inbox(state, me, { limit = 100 } = {}) {
+export async function inbox(state, me, { limit = 100, now = Math.floor(Date.now() / 1000) } = {}) {
   const prefix = `index/inbox/${me}/`;
   const notes = [];
   for await (const [key, value] of state.list(prefix)) {
     const [time, id, from, ...rest] = key.slice(prefix.length).split("/");
     const note = parse(value);
-    if (rest.length || !ID.test(id ?? "") || !/^\d{12}$/.test(time) || !note || !["issue", "pull", "comment", "review"].includes(note.kind)) continue;
+    // A note dated ahead of now (beyond clock skew) would sit on top for good: left out.
+    if (rest.length || !ID.test(id ?? "") || !/^\d{12}$/.test(time) || Number(time) > now + 3600 || !note || !["issue", "pull", "comment", "review"].includes(note.kind)) continue;
     notes.push({ from, id, time: Number(time), kind: note.kind, repo: String(note.repo), thread: String(note.thread) });
   }
   const newest = notes.reverse().slice(0, limit);

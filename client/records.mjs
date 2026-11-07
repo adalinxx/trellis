@@ -62,6 +62,11 @@ export const repo = (a, name, card = {}) => [
  * Maintainer `as`'s word that `owner`'s `ref` in repo `name` points at commit
  * block `commit` (undefined: the ref is deleted), as push number `seq`.
  */
+/** The highest seq counted: a word above it counts as it. */
+export const MAX_SEQ = 2 ** 52;
+/** The seq of a push replacing a word at `seq`. */
+export const nextSeq = (seq) => Math.min(seq + 1, MAX_SEQ);
+
 export const ref = (owner, name, refName, commit, { as = owner, seq = 1 } = {}) => [
   [as === owner ? refKey(owner, name, refName) : `${pushPrefix(as, owner, name)}${checkRef(refName)}`, json({ commit: commit ?? null, seq })],
 ];
@@ -101,7 +106,9 @@ export async function words(sdk, state, a, name, theCard) {
       try {
         checkRef(ref);
         if (!Number.isSafeInteger(seq) || seq < 0) continue;
-        if (word.commit === null || (typeof word.commit === "string" && sdk.parseCID(word.commit).codec === 0x71)) found.push([ref, { commit: word.commit, seq, by: m }]);
+        // Clamped, so a word can't climb out of reach: at the cap, the owner's word wins.
+        word.seq = Math.min(seq, MAX_SEQ);
+        if (word.commit === null || (typeof word.commit === "string" && sdk.parseCID(word.commit).codec === 0x71)) found.push([ref, { commit: word.commit, seq: word.seq, by: m }]);
       } catch {}
     }
     return found;

@@ -268,7 +268,7 @@ try {
   // CI: a runner runs .trellis/ci on the branch tip and posts its result;
   // a check from someone the card doesn't name doesn't count.
   mkdirSync(join(tools, ".trellis"), { recursive: true });
-  writeFileSync(join(tools, ".trellis/ci"), "#!/bin/sh\necho checking $TRELLIS_BRANCH\ntest -f tool.sh\n");
+  writeFileSync(join(tools, ".trellis/ci"), "#!/bin/sh\necho checking $TRELLIS_BRANCH\ntest -f tool.sh\n# the runner's clone and key are out of reach\ntest ! -e .git && test -z \"$TRELLIS_KEY\" && ! git config trellis.key\n");
   chmodSync(join(tools, ".trellis/ci"), 0o755);
   run(tools, "add", "-A");
   run(tools, "commit", "-q", "-m", "ci");
@@ -315,6 +315,7 @@ try {
   assert.match(gitFails(helperEnv(readerNode, aliceKey), aliceVault, "fetch", "origin"), /one of its members/);
   gitWith(helperEnv(readerNode), vaultClone, "pull", "-q", "--ff-only");
   assert.equal(readFileSync(join(vaultClone, "plans.txt"), "utf8"), "newer secret plans\n");
+  assert.throws(() => trellis(helperEnv(authorNode), vault, "check", "test", "pass"), /private, and checks are public/);
   console.log("private: sealed blocks; members clone, others can't; a dropped reader can't fetch what came after");
 
   // trellis import: a SHA-1 repository on master, signed, then pushed whole.

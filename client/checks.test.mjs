@@ -24,3 +24,12 @@ test("a commit's checks: the latest per name, from the repo's maintainers and ru
   assert.throws(() => check("bot", "olga", "r", id, "x", { state: "great", time: 1 }));
   assert.throws(() => check("bot", "olga", "r", "abc", "x", { state: "pass", time: 1 }));
 });
+
+test("a check dated ahead of now doesn't outrank later ones", async () => {
+  const state = memory([
+    ...check("olga", "olga", "r", id, "test", { state: "fail", time: 100 }),
+    ...check("bot", "olga", "r", id, "test", { state: "pass", time: 99_999_999 }),
+  ]);
+  const got = await checks(state, "olga", "r", { runners: ["bot"] }, id, { now: 200 });
+  assert.deepEqual(got.map((c) => [c.by, c.state]), [["olga", "fail"]]);
+});

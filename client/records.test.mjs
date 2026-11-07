@@ -90,3 +90,13 @@ test("a delegate the card drops no longer counts", async () => {
   const state = memory([...records.repo("alice", "r", {}), ...records.ref("alice", "r", MAIN, at(1)), ...records.ref("alice", "r", MAIN, at(2), { as: "bob", seq: 5 })]);
   assert.equal((await records.refs(sdk, state, "alice", "r")).get(MAIN), at(1));
 });
+
+test("a seq past the cap counts as the cap, where the owner's word wins", async () => {
+  const state = memory([
+    ...records.repo("alice", "r", { delegates: ["bob"] }),
+    ...records.ref("alice", "r", MAIN, at(1), { as: "bob", seq: Number.MAX_SAFE_INTEGER }),
+    ...records.ref("alice", "r", MAIN, at(2), { seq: records.nextSeq(Number.MAX_SAFE_INTEGER) }),
+  ]);
+  assert.equal(records.nextSeq(Number.MAX_SAFE_INTEGER), records.MAX_SEQ);
+  assert.equal((await records.refs(sdk, state, "alice", "r")).get(MAIN), at(2), "the owner can always take a ref back");
+});
