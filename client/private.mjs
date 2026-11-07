@@ -15,7 +15,7 @@ const b64 = (bytes) => Buffer.from(bytes).toString("base64");
 const unb64 = (text) => new Uint8Array(Buffer.from(text, "base64"));
 
 /** Whether `card` is a private repo's. */
-export const isPrivate = (card) => Array.isArray(card?.private?.keys) && card.private.keys.length > 0;
+export { isPrivate } from "./records.mjs";
 
 /** The repo's members: maintainers, then readers. */
 export const members = (owner, card) => [...new Set([...maintainers(owner, card), ...(Array.isArray(card?.readers) ? card.readers.filter((r) => typeof r === "string" && !r.includes("/")) : [])])];

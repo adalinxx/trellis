@@ -447,23 +447,23 @@ export async function accept(gitDir, { say = () => {} } = {}) {
  */
 export async function forkRepo(gitDir, { say = () => {} } = {}) {
   const { execFileSync } = await import("node:child_process");
-  const { isPrivate } = await import("./private.mjs");
   const repo = await origin(gitDir, { say });
   const { sdk, owner, name, chain } = repo;
   const me = repo.signer(say).address;
   if (me === owner) throw new Error(`${owner}/${name} is yours already`);
   const state = await chain.state();
   const card = await records.card(state, owner, name);
-  if (isPrivate(card)) throw new Error(`${owner}/${name} is private: a fork would be public`);
   const refs = await records.refs(sdk, state, owner, name, card ?? null);
   if (!card && !refs.size) throw new Error(`${owner}/${name} doesn't exist`);
-  const mine = await records.card(state, me, name);
-  if (mine && mine.forkOf !== `${owner}/${name}`) throw new Error(`you already have a repo named ${name}`);
-  await repo.write(records.fork(me, owner, name, card, refs, mine), { say, what: `Fork ${name}` });
   const git = (...args) => execFileSync("git", ["--git-dir", gitDir, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+  // origin becomes upstream; an upstream already there must be the same repo.
   const remotes = git("remote").split("\n");
-  if (!remotes.includes("upstream")) git("remote", "rename", "origin", "upstream");
-  else git("remote", "remove", "origin");
+  const originURL = git("remote", "get-url", "origin");
+  if (remotes.includes("upstream") && git("remote", "get-url", "upstream") !== originURL) throw new Error(`this clone's upstream is ${git("remote", "get-url", "upstream")}, not ${originURL}: remove or rename it first`);
+  const writes = records.fork(me, owner, name, card, refs, await records.card(state, me, name));
+  await repo.write(writes, { say, what: `Fork ${name}` });
+  if (remotes.includes("upstream")) git("remote", "remove", "origin");
+  else git("remote", "rename", "origin", "upstream");
   git("remote", "add", "origin", `trellis::${me}/${name}`);
   return `${me}/${name}`;
 }

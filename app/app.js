@@ -342,7 +342,7 @@ function repoHead({ owner, name }, card, tab, ref) {
     ["search", "Search", href({ view: "search", owner, name, ref: ref ?? "HEAD" })],
   ];
   const fork = card?.forkOf ? `<p class="fork-of">Forked from <a href="${href({ view: "code", ...collab.repoOf(card.forkOf) })}">${esc(shortAccount(collab.repoOf(card.forkOf).owner))}/${esc(collab.repoOf(card.forkOf).name)}</a></p>` : "";
-  const forkButton = me && me !== owner && !card?.private ? `<button class="btn small" data-act="fork">Fork</button>` : "";
+  const forkButton = me && me !== owner && !records.isPrivate(card) ? `<button class="btn small" data-act="fork">Fork</button>` : "";
   const forksLink = `<a class="btn small" href="${href({ view: "forks", owner, name })}">Forks</a>`;
   return `<div class="repo-head"><div class="head-acts">${forksLink}${forkButton}</div>
       <h1><a href="${href({ view: "owner", owner })}" class="owner" title="${esc(owner)}">${esc(shortAccount(owner))}</a> <span class="muted">/</span> <a href="${href({ view: "code", owner, name })}">${esc(name)}</a></h1>
@@ -893,6 +893,9 @@ document.addEventListener("click", async (event) => {
   if (act === "fork") {
     // A fork is the same repo name under the reader's account: a card and the
     // same refs. Its blocks are the original's, so nothing is copied.
+    // Forked already: go to it.
+    const mine = await records.card(await chain.state(), me, route.name).catch(() => undefined);
+    if (mine?.forkOf === `${route.owner}/${route.name}`) return void (location.hash = href({ view: "code", owner: me, name: route.name }));
     button.disabled = true;
     button.textContent = "Forking…";
     send(async (state) => {

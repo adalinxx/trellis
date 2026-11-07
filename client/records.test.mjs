@@ -124,3 +124,10 @@ test("a fork: the same name, the original's refs, listed among its forks", async
   assert.equal((await records.refs(sdk, state, "pat", "r")).get(MAIN), at(1));
   assert.deepEqual(await records.forks(state, "olga", "r"), ["pat"], "a same-named repo that isn't a fork isn't listed");
 });
+
+test("a fork is made once, never over a repo you have, never of a private one", () => {
+  const refs = new Map([[MAIN, at(1)]]);
+  assert.throws(() => records.fork("pat", "olga", "r", {}, refs, { forkOf: "olga/r" }), /forked olga\/r already/);
+  assert.throws(() => records.fork("pat", "olga", "r", {}, refs, {}), /already have a repo named r/);
+  assert.throws(() => records.fork("pat", "olga", "r", { private: { keys: [{ v: 1, to: {} }] } }, refs), /private/);
+});

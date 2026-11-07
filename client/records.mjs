@@ -163,16 +163,24 @@ export async function whereNow(state, a, name) {
   return { ...at, moved: at.owner !== a || at.name !== name };
 }
 
+/** Whether `card` is a private repo's (private.mjs seals it). */
+export const isPrivate = (card) => Array.isArray(card?.private?.keys) && card.private.keys.length > 0;
+
 /**
  * `me`'s fork of `<owner>/<name>`: the same name under `me`, its card naming
  * the original (`forkOf`), its refs where the original's are. The blocks are
- * the original's, so nothing is uploaded. `mine` is `me`'s card there, if any:
- * then only the refs are written.
+ * the original's, so nothing is uploaded. `mine` is `me`'s card there, if
+ * any: a fork is made once, never over a repo `me` already has (forking
+ * again would move its branches back).
  */
-export const fork = (me, owner, name, card, refs, mine) => [
-  ...(mine ? [] : repo(me, name, { forkOf: `${owner}/${name}`, ...(typeof card?.description === "string" && { description: card.description }) })),
-  ...[...refs].flatMap(([refName, cid]) => ref(me, name, refName, cid)),
-];
+export function fork(me, owner, name, card, refs, mine) {
+  if (mine) throw new Error(mine.forkOf === `${owner}/${name}` ? `you forked ${owner}/${name} already: ${me}/${name}` : `you already have a repo named ${name}`);
+  if (isPrivate(card)) throw new Error(`${owner}/${name} is private: a fork would be public`);
+  return [
+    ...repo(me, name, { forkOf: `${owner}/${name}`, ...(typeof card?.description === "string" && { description: card.description }) }),
+    ...[...refs].flatMap(([refName, cid]) => ref(me, name, refName, cid)),
+  ];
+}
 
 /** The forks of `<owner>/<name>`: owners of the same name whose card says it's a fork of it. */
 export async function forks(state, owner, name) {
