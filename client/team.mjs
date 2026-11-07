@@ -284,8 +284,13 @@ export async function runCI(gitDir, { once = false, every = 60, check: checkName
   for (;;) {
     g("fetch", "--quiet", "--prune", "origin");
     const card = await records.card(await repo.chain.state(), repo.owner, repo.name);
-    const tips = g("for-each-ref", "--format=%(objectname) %(refname:short)", "refs/remotes/origin").split("\n").filter((l) => l && !l.endsWith("/HEAD")).map((l) => l.split(" "));
-    for (const [id, branch] of [...new Map(tips.map(([id, b]) => [id, b]))].map(([id, b]) => [id, b])) {
+    // Each tip once, under the first branch at it (origin/HEAD is not a branch).
+    const tips = new Map();
+    for (const line of g("for-each-ref", "--format=%(objectname) %(refname)", "refs/remotes/origin").split("\n")) {
+      const [id, ref] = line.split(" ");
+      if (id && ref !== "refs/remotes/origin/HEAD" && !tips.has(id)) tips.set(id, ref.slice("refs/remotes/".length));
+    }
+    for (const [id, branch] of tips) {
       const done = (await checks(await repo.chain.state(), repo.owner, repo.name, { ...card, runners: [me] }, id)).some((c) => c.check === checkName && c.by === me);
       if (done) continue;
       const post = (state, summary) => repo.write(check(me, repo.owner, repo.name, id, checkName, { state, summary, time: Math.floor(Date.now() / 1000) }), { say, what: `CI ${branch}` });
