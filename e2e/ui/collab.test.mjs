@@ -17,6 +17,8 @@ import { after, before, test as nodeTest } from "node:test";
 import { chromium, expect as baseExpect } from "@playwright/test";
 import * as sdk from "../../vendor/lattice-sdk.js";
 import * as collab from "../../client/collab.mjs";
+import * as records from "../../client/records.mjs";
+import { delegation } from "../../client/team.mjs";
 import { sponsored } from "../../client/sponsor.mjs";
 import { changes, transaction } from "../../client/write.mjs";
 import { CHAIN, account, here, start, state, until } from "../stack.mjs";
@@ -291,10 +293,17 @@ test("a pull request from Dave's fork: a line reviewed, merged by Carol's push, 
   await page.getByRole("link", { name: "Conversation" }).click();
   await expect(page.locator(".comment").nth(1)).toContainText("on src/main.c line 2");
 
-  // Carol merges by pushing; the page sees main contains the branch.
-  git(carol, repo, "fetch", "-q", `trellis::${dave.address}/garden`, "fix");
-  git(carol, repo, "merge", "-q", "--ff-only", "FETCH_HEAD");
-  git(carol, repo, "push", "-q", "origin", "main");
+  // Not a maintainer, Bob sees no merge button. Carol makes him one; he
+  // merges in the page (a fast-forward, his own push); Carol drops him, and
+  // main stays where he put it.
+  await expect(page.locator('form[data-form="merge"]')).toHaveCount(0);
+  await writeAs(carol, records.repo(carol.address, "garden", { delegates: [bob] }));
+  await page.reload();
+  await approve(page.getByRole("button", { name: "Merge into main" }));
+  await expect(page.locator(".issue-head .state")).toHaveText("Merged", { timeout: 300_000 });
+  const now = await state(authorNode);
+  assert.equal((await records.words(sdk, now, carol.address, "garden")).get("refs/heads/main").by, bob);
+  await writeAs(carol, delegation(carol.address, "garden", { delegates: [bob] }, await records.words(sdk, now, carol.address, "garden"), []));
   await page.reload();
   await expect(page.locator(".issue-head .state")).toHaveText("Merged");
   await expect(page.locator(".event.merged")).toBeVisible();

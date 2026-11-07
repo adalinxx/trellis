@@ -82,7 +82,10 @@ device's work for each fee, so taking part needs no coins.
 - **Pull requests** merge a branch of any copy of the repo (yours, or
   someone's fork) into one of its branches. The page shows its commits and
   its changes from the merge base, and anyone signed in can comment on any
-  line. A maintainer merges by pushing (the page shows how); once the base
+  line; a reviewer sees the commits since their last review on their own. A
+  maintainer merges in the page when the base is behind the branch (a
+  fast-forward: their push moves the base, with no new commit), or else by
+  pushing a merge commit from a clone (the page shows how). Once the base
   branch contains the head's commit, the page shows it as merged. No record
   says so.
 - **Releases**: a maintainer writes notes for a tag; they show on the Tags

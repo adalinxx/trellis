@@ -694,10 +694,18 @@ function conversation(route, issue, comments, status, isMaintainer, compared) {
   const closedNote = issue.state === "closed" && issue.closedBy ? `<p class="event">${byline(issue.closedBy)} closed this.</p>` : "";
   const mergeNote = status.state === "merged" ? `<p class="event merged">Merged: <code>${esc(issue.base)}</code> now contains this branch's commits.</p>` : "";
   const canClose = me && (me === issue.author || isMaintainer) && status.state !== "merged";
-  const howToMerge = status.state === "open" && compared && isMaintainer ? `<details class="merge"><summary>Merge by pushing</summary>
-    <pre class="cmd">git fetch trellis::${esc(collab.headOf(issue.head).owner)}/${esc(collab.headOf(issue.head).name)} ${esc(collab.headOf(issue.head).branch)}
+  // The base behind the head: the page moves it (a fast-forward). Else a
+  // merge commit is needed, made in a clone: the page can't name a new tree
+  // without the git ids of everything beside what changed.
+  const fastForward = compared && compared.mergeBase === status.baseCommit;
+  const commands = `<pre class="cmd">git fetch trellis::${esc(collab.headOf(issue.head).owner)}/${esc(collab.headOf(issue.head).name)} ${esc(collab.headOf(issue.head).branch)}
 git checkout ${esc(issue.base)} && git merge FETCH_HEAD
-git push origin ${esc(issue.base)}</pre><p class="hint">Once <code>${esc(issue.base)}</code> contains its commits, this shows as merged.</p></details>` : "";
+git push origin ${esc(issue.base)}</pre>`;
+  const howToMerge = status.state !== "open" || !compared || !isMaintainer ? "" : fastForward
+    ? `<form class="merge panel" data-form="merge"><p><strong>Ready to merge.</strong> <code>${esc(issue.base)}</code> is behind this branch, so merging moves it to <code>${esc(compared.commits[0]?.id.slice(0, 10) ?? "")}</code>, with no new commit.</p>
+        <div class="row2"><span class="status"></span><button class="btn primary">Merge into ${esc(issue.base)}</button></div>
+        <details><summary>Or merge by pushing</summary>${commands}</details></form>`
+    : `<details class="merge" open><summary>Merge by pushing</summary><p><code>${esc(issue.base)}</code> has commits this branch doesn't, so merging makes a merge commit; make it in a clone:</p>${commands}<p class="hint">Once <code>${esc(issue.base)}</code> contains its commits, this shows as merged.</p></details>`;
   const form = me
     ? `<form class="comment-form" data-form="comment"><label class="sr-only" for="comment-body">Comment</label><textarea id="comment-body" name="body" required maxlength="65536" placeholder="Leave a comment (Markdown)"></textarea>
         <div class="row2"><span class="status"></span>${canClose ? `<button type="button" class="btn" data-act="state" data-state="${issue.state === "open" ? "closed" : "open"}">${issue.state === "open" ? "Close" : "Reopen"}</button>` : ""}<button class="btn primary">Comment</button></div></form>`
@@ -710,10 +718,20 @@ async function pullFiles(route, status, compared, comments) {
   if (!compared) return `<p class="empty">Its branch is gone.</p>`;
   const head = await chain.read.commit(status.headCommit);
   const base = compared.mergeBase ? await chain.read.commit(compared.mergeBase) : undefined;
-  const changed = await chain.read.changes(base?.tree, head.tree);
+  // ?since=<commit>: only what changed after a commit of the branch, such as the last one reviewed.
+  const since = route.since && compared.commits.some((c) => c.cid === route.since) ? await chain.read.commit(route.since) : undefined;
+  const from = since ?? base;
+  const changed = await chain.read.changes(from?.tree, head.tree);
   const reviews = comments.filter((c) => c.review?.commit === status.headCommit);
-  const files = await Promise.all(changed.map((change) => fileDiff(route, { cid: head.cid, parents: [compared.mergeBase] }, change, { reviews, commit: head.cid })));
-  return `<p class="summary">${changed.length} file${changed.length === 1 ? "" : "s"} changed from the merge base, <span class="add">+${files.reduce((n, f) => n + f.added, 0)}</span> <span class="del">−${files.reduce((n, f) => n + f.removed, 0)}</span>${me ? ". Press + beside a line to comment on it." : ""}</p>${files.map((f) => f.html).join("")}`;
+  const files = await Promise.all(changed.map((change) => fileDiff(route, { cid: head.cid, parents: [from?.cid] }, change, { reviews, commit: head.cid })));
+  const self = { view: route.view, owner: route.owner, name: route.name, author: route.author, id: route.id, tab: "files" };
+  const mine = comments.filter((c) => c.by === me && c.review && compared.commits.some((k) => k.cid === c.review.commit)).at(-1);
+  const newer = mine && mine.review.commit !== status.headCommit ? compared.commits.findIndex((c) => c.cid === mine.review.commit) : -1;
+  const toggle = since
+    ? ` <a href="${href(self)}">Show all changes</a>`
+    : newer > 0 ? ` <a href="${href({ ...self, since: mine.review.commit })}">Show the ${newer} commit${newer === 1 ? "" : "s"} since your last review</a>` : "";
+  const what = since ? `since <code>${esc(since.id.slice(0, 10))}</code>` : "from the merge base";
+  return `<p class="summary">${changed.length} file${changed.length === 1 ? "" : "s"} changed ${what}, <span class="add">+${files.reduce((n, f) => n + f.added, 0)}</span> <span class="del">−${files.reduce((n, f) => n + f.removed, 0)}</span>${me ? ". Press + beside a line to comment on it." : ""}${toggle}</p>${files.map((f) => f.html).join("")}`;
 }
 
 // ---- After a render: images, filter, ref picker ----
@@ -905,6 +923,19 @@ document.addEventListener("submit", (event) => {
       const id = collab.newId();
       const post = { on: `${route.author}/${route.id}`, body: field("body"), time: time(), review: { ...review, commit: headCommit } };
       return [...collab.post(me, id, post), ...(await tell(state, id, post, "review"))];
+    });
+  }
+  if (kind === "merge") {
+    run(form, async (state) => {
+      // Read again: the merge must still be a fast-forward of the base as it stands now.
+      const card = await records.card(state, route.owner, route.name);
+      const issue = await collab.oneIssue(state, route.owner, route.name, card, route.author, route.id);
+      const words = await records.words(sdk, state, route.owner, route.name, card ?? null);
+      const status = await pullStatus(state, issue, await records.refs(sdk, state, route.owner, route.name, card ?? null));
+      if (!status.headCommit || !status.baseCommit) throw new Error("The branch or its base is gone.");
+      if (!(await chain.read.contains(status.headCommit, status.baseCommit))) throw new Error(`${issue.base} moved on: merge in a clone.`);
+      const ref = `refs/heads/${issue.base}`;
+      return records.ref(route.owner, route.name, ref, status.headCommit, { as: me, seq: (words.get(ref)?.seq ?? 0) + 1 });
     });
   }
   if (kind === "labels") {
