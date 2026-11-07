@@ -130,7 +130,7 @@ function renderWho() {
 const seenKey = () => `seen:${me}`;
 const seen = () => Number(saved(seenKey()) ?? 0);
 async function countUnread() {
-  const notes = await collab.inbox(await chain.state(), me, { limit: 50 }).catch(() => []);
+  const notes = await chain.state().then((state) => collab.inbox(state, me, { limit: 50 })).catch((error) => (console.warn("inbox", error), []));
   const n = notes.filter((note) => note.time > seen()).length;
   const badge = $("#unread");
   if (badge) badge.textContent = n ? ` ${n > 49 ? "50+" : n}` : "";
@@ -157,8 +157,10 @@ async function inboxPage() {
 /** Who a new issue or comment concerns, mentioned @handles included: see collab.concerned. */
 async function concerned(state, route, thread, body) {
   const card = await records.card(state, route.owner, route.name);
-  const names = await moniker.state().catch(() => undefined);
-  const mentioned = names ? (await Promise.all(collab.mentions(body).map((h) => accountOf(names, h).catch(() => undefined)))).filter(Boolean) : [];
+  // Moniker is read only for a body that mentions someone, and not waited on for long.
+  const handles = collab.mentions(body);
+  const names = handles.length ? await Promise.race([moniker.state().catch(() => undefined), new Promise((r) => setTimeout(r, 10_000))]) : undefined;
+  const mentioned = names ? (await Promise.all(handles.map((h) => accountOf(names, h).catch(() => undefined)))).filter(Boolean) : [];
   return collab.concerned(state, route.owner, route.name, card, thread, mentioned);
 }
 

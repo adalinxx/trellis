@@ -244,8 +244,16 @@ test("the inbox: Carol hears of Bob's issue and comment; Bob of Carol's reply", 
   const time = Math.floor(Date.now() / 1000) + 1;
   const post = { on: notes[0].thread, body: "Pulling them today.", time };
   await writeAs(carol, [...collab.post(carol.address, id, post), ...collab.notify(carol.address, [bob, carol.address], time, id, { kind: "comment", repo: notes[0].repo, thread: post.on })]);
+  assert.deepEqual((await collab.inbox(await state(authorNode), bob)).map((n) => [n.kind, n.from]), [["comment", carol.address]], "Bob's inbox, as the chain has it");
+  const logged = [];
+  page.on("console", (m) => logged.push(m.text()));
   await page.goto(appURL("/"));
-  await expect(page.locator("#unread")).toHaveText(" 1");
+  try {
+    await expect(page.locator("#unread")).toHaveText(" 1");
+  } catch (error) {
+    error.message += `\n--- console: ${logged.join(" | ")}`;
+    throw error;
+  }
   await page.getByRole("link", { name: /^Inbox/ }).click();
   await expect(page.locator(".inbox-list li.unread")).toHaveCount(1);
   await expect(page.locator(".inbox-list li")).toContainText(["commented on Weeds in the beds"]);
