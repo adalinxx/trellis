@@ -353,6 +353,16 @@ test("releases: Carol's shown on her tags; Bob writes one on his fork", async ()
 test("Bob pushes from the command line with Selfhold: one account in git and the page", async () => {
   const home = mkdtempSync(join(tmpdir(), "trellis-home-"));
   const env = { ...process.env, HOME: home, PATH: `${here("../bin")}:${process.env.PATH}`, TRELLIS_NODE: authorNode, TRELLIS_SPONSOR: sponsorURL, TRELLIS_CHAIN: CHAIN.join("/"), TRELLIS_WALLET: walletPage, TRELLIS_NO_BROWSER: "1", TRELLIS_SIGN_PORT: "29271", GIT_TERMINAL_PROMPT: "0" };
+  // Each step named, and given at most `seconds`, so a hang says where.
+  const step = async (what, promise, seconds = 120, more = () => "") => {
+    console.log(`cli: ${what}`);
+    let timer;
+    try {
+      return await Promise.race([promise, new Promise((_, reject) => (timer = setTimeout(() => reject(new Error(`cli: ${what}: no end in ${seconds} s${more()}`)), seconds * 1000)))]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
   // A command that stops to ask Selfhold: the URL it prints, and its end.
   const cli = (command, args, cwd = home) => {
     const child = spawn(command, args, { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
@@ -365,25 +375,33 @@ test("Bob pushes from the command line with Selfhold: one account in git and the
       if (found) resolve(found[1]);
     }));
     const done = new Promise((resolve, reject) => child.on("exit", (code) => (code === 0 ? resolve(out) : reject(new Error(`${command} ${args.join(" ")} exited ${code}: ${err}`)))));
-    return { url, done };
+    return { url, done, said: () => `\n--- its stderr: ${err}\n--- its stdout: ${out}`, stop: () => child.kill() };
   };
   const login = cli(here("../bin/trellis"), ["login"]);
-  await page.goto(await login.url);
-  const opened = await inSelfhold(page.getByRole("button", { name: "Approve in Selfhold" }));
-  await opened.getByRole("button", { name: "Connect", exact: true }).click();
-  await page.bringToFront();
-  assert.match(await login.done, new RegExp(`signed in as ${bob}`));
+  try {
+    await page.goto(await step("trellis login prints its URL", login.url, 60, login.said));
+    const opened = await step("Selfhold's window opens for the login", inSelfhold(page.getByRole("button", { name: "Approve in Selfhold" })), 60);
+    await opened.getByRole("button", { name: "Connect", exact: true }).click();
+    await page.bringToFront();
+    assert.match(await step("trellis login ends", login.done, 60, login.said), new RegExp(`signed in as ${bob}`));
+  } finally {
+    login.stop();
+  }
 
   const clone = join(home, "garden");
-  execFileSync("git", ["clone", "-q", `trellis::${bob}/garden`, clone], { env });
+  execFileSync("git", ["clone", "-q", `trellis::${bob}/garden`, clone], { env, timeout: 300_000 });
   execFileSync("git", ["-C", clone, "-c", "user.name=Bob", "-c", "user.email=bob@example.com", "commit", "-q", "--allow-empty", "-m", "from Bob's terminal"], { env });
   const push = cli("git", ["-C", clone, "push", "-q", "origin", "main"]);
-  await page.goto(await push.url);
-  await approve(page.getByRole("button", { name: "Approve in Selfhold" }));
-  await push.done;
+  try {
+    await page.goto(await step("git push prints its URL", push.url, 120, push.said));
+    await step("Selfhold approves the push", approve(page.getByRole("button", { name: "Approve in Selfhold" })), 60);
+    await step("git push ends", push.done, 400, push.said);
+  } finally {
+    push.stop();
+  }
   const head = execFileSync("git", ["-C", clone, "rev-parse", "main"], { encoding: "utf8" }).trim();
   await page.goto(appURL(`/${bob}/garden/commits/main`));
-  await expect(page.locator(".commit-row .subject").first()).toHaveText("from Bob's terminal");
+  await expect(page.locator(".commit-row .subject").first()).toHaveText("from Bob's terminal", { timeout: 120_000 });
   await expect(page.locator(".commit-row .id").first()).toHaveText(head.slice(0, 10));
   assert.equal(BigInt((await account(authorNode, bob)).balance ?? 0), 0n, "Bob still holds no coins");
 });
