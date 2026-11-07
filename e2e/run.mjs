@@ -190,7 +190,8 @@ try {
   assert.equal(BigInt((await account(carol.address)).balance ?? 0), 0n, "Carol has no coins");
   console.log("git push: a new repo, coinless");
 
-  // Cloned through the reader's node.
+  // Cloned through the reader's node, once it has the push.
+  await until("the reader's node has Carol's main", async () => (await records.refs(sdk, await state(readerNode), carol.address, "tools")).has("refs/heads/main"));
   const cloneDir = join(work, "tools-clone");
   gitWith(helperEnv(readerNode), work, "clone", "-q", address, cloneDir);
   assert.equal(run(cloneDir, "rev-parse", "--show-object-format"), "sha256");
