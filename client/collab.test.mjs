@@ -126,3 +126,17 @@ test("an inbox holds the notes whose records are there, newest first", async () 
   assert.deepEqual((await inbox(state, "dana")).map((n) => n.from), ["carol", "bob"], "a maintainer hears of all but their own");
   assert.deepEqual(mentions("hi @erin and @bob_2, mail a@b.com, @erin again"), ["erin", "bob_2"]);
 });
+
+test("a release's files are listed as written, or the release isn't read", async () => {
+  const cid = "bafyreiaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const files = [{ name: "tool-1.0.tar.gz", cid, size: 1234 }];
+  const state = memory([
+    ...collab.release("carol", "garden", "v1", { notes: "n", time: 5, files }),
+    ...collab.release("carol", "garden", "v2", { notes: "n", time: 5, files: [{ name: "../x", cid, size: 1 }] }),
+    ...collab.release("carol", "garden", "v3", { notes: "n", time: 5, files: [{ name: "a", cid: "nope", size: 1 }] }),
+  ]);
+  const got = await collab.releases(state, "carol", "garden", {});
+  assert.deepEqual(got.get("v1").files, files);
+  assert.equal(got.has("v2"), false);
+  assert.equal(got.has("v3"), false);
+});

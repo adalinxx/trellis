@@ -131,3 +131,38 @@ export async function maintainers(gitDir, verb, who, { say = () => {} } = {}) {
   await repo.write(delegation(owner, name, card, await records.words(sdk, state, owner, name, card), delegates), { say });
   return records.maintainers(owner, { delegates });
 }
+
+/**
+ * `trellis release <tag> [--title <t>] [--notes <text>] [<file>...]`, by a
+ * maintainer: the release of `tag`, its files kept by every sponsor in
+ * trellis.sponsor first (paid with this machine's work), then its record.
+ */
+export async function release(gitDir, tag, { title, notes = "", files = [], say = () => {} } = {}) {
+  if (!tag) throw new Error("trellis release <tag> [--title <title>] [--notes <text>] [<file>...]");
+  const { readFileSync, statSync } = await import("node:fs");
+  const { basename } = await import("node:path");
+  const { fileVolumes } = await import("../vendor/storage-file.mjs");
+  const { BLOB_TYPE } = await import("./objects.mjs");
+  const { keepAll, setting } = await import("./remote.mjs");
+  const collab = await import("./collab.mjs");
+  const repo = await origin(gitDir);
+  const { sdk, owner, name, chain, chainPath } = repo;
+  const me = repo.signer(say).address;
+  const card = await records.card(await chain.state(), owner, name);
+  if (!records.maintainers(owner, card).includes(me)) throw new Error(`${me} isn't one of ${owner}/${name}'s maintainers`);
+  if (!(await records.refs(sdk, await chain.state(), owner, name, card ?? null)).has(`refs/tags/${tag}`)) throw new Error(`${owner}/${name} has no tag ${tag}: push it first`);
+  const sponsors = (setting(gitDir, "sponsor", "TRELLIS_SPONSOR") ?? "").split(",").map((u) => u.trim()).filter(Boolean);
+  if (files.length && !sponsors.length) throw new Error("set trellis.sponsor (git config) first: it keeps the files");
+  const kept = [];
+  for (const file of files) {
+    const bytes = new Uint8Array(readFileSync(file));
+    const volumes = fileVolumes(sdk, BLOB_TYPE, bytes);
+    for (const sponsor of sponsors) await keepAll(sdk, sponsor, chainPath, volumes, say);
+    kept.push({ name: basename(file), cid: volumes[0].cid, size: statSync(file).size });
+  }
+  const record = { ...(title && { title }), notes, time: Math.floor(Date.now() / 1000), ...(kept.length && { files: kept }) };
+  if (!collab.releaseFiles(record.files)) throw new Error("file names must be distinct, without / and not starting with .");
+  // A maintainer's release is under their own key, for the repo's name.
+  await repo.write(collab.release(me, name, tag, record), { say, what: `Release ${tag} of ${name}` });
+  return { tag, files: kept };
+}

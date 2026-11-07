@@ -7,6 +7,9 @@
 // each fee, so taking part needs no coins. No server of its own.
 import * as sdk from "../vendor/lattice-sdk.js";
 import * as records from "../client/records.mjs";
+import { fileVolumes } from "../vendor/storage-file.mjs";
+import { BLOB_TYPE } from "../client/objects.mjs";
+import { keep, storageChain } from "../client/sponsor.mjs";
 import { tip, view, volumeLoader } from "../client/state.mjs";
 import { hunks, isText, lineDiff, lines, reader } from "../client/browse.mjs";
 import * as collab from "../client/collab.mjs";
@@ -561,10 +564,12 @@ async function refList(route, card, refs) {
     const note = tags[0]?.message ? ` · ${esc(subject(tags[0].message).subject)}` : "";
     const tag = shortRef(r);
     const rel = notes.get(tag);
-    const release = rel ? `<div class="release"><h3>${esc(rel.title || tag)}</h3><div class="markdown">${markdown(rel.notes, route, tag, "")}</div><p class="muted small">Released by ${byline(rel.by)} ${esc(ago(rel.time))}</p></div>` : "";
+    const assets = rel?.files.length ? `<ul class="assets">${rel.files.map((f) => `<li><a href="#" data-act="download" data-cid="${esc(f.cid)}" data-name="${esc(f.name)}">${esc(f.name)}</a> <span class="muted">${esc(bytes(f.size))}</span></li>`).join("")}</ul>` : "";
+    const release = rel ? `<div class="release"><h3>${esc(rel.title || tag)}</h3><div class="markdown">${markdown(rel.notes, route, tag, "")}</div>${assets}<p class="muted small">Released by ${byline(rel.by)} ${esc(ago(rel.time))}</p></div>` : "";
     const write = canRelease ? `<details class="write-release"><summary>${rel ? "Edit the release" : "Write release notes"}</summary>
         <form data-form="release" data-tag="${esc(tag)}"><label>Title<input type="text" name="title" value="${esc(rel?.title ?? "")}"></label>
         <label>Notes<textarea name="notes" required>${esc(rel?.notes ?? "")}</textarea></label>
+        <label>Files<input type="file" name="files" multiple></label>${rel?.files.length ? `<p class="hint">Files chosen here are added to the ${rel.files.length} it has; one with the same name replaces it.</p>` : ""}
         <div class="row2"><span class="status"></span><button class="btn primary">Save the release</button></div></form></details>` : "";
     return `<li class="ref-row"><a class="ref-name" href="${href({ view: "tree", owner: route.owner, name: route.name, ref: tag, path: "" })}">${esc(tag)}</a>
       <span class="muted">${esc(subject(c.message).subject)} · ${esc(ago(c.committer.time))}${note}</span><span class="mono id">${esc(c.id.slice(0, 10))}</span>${release}${write}</li>`;
@@ -806,6 +811,21 @@ document.addEventListener("click", async (event) => {
   const act = button.dataset.act;
   const route = parseRoute(location.hash);
   if (act === "retry") render();
+  if (act === "download") {
+    event.preventDefault();
+    const label = button.textContent;
+    button.textContent = `${label} (reading…)`;
+    try {
+      const url = URL.createObjectURL(new Blob([await chain.read.blob(button.dataset.cid)], { type: "application/octet-stream" }));
+      const a = Object.assign(document.createElement("a"), { href: url, download: button.dataset.name });
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (error) {
+      notice(`${button.dataset.name} couldn't be read: ${error.message}`);
+    } finally {
+      button.textContent = label;
+    }
+  }
   if (act === "defaults") {
     $("#node").value = DEFAULTS.node;
     $("#chain").value = DEFAULTS.chain;
@@ -980,7 +1000,24 @@ document.addEventListener("submit", (event) => {
   }
   if (kind === "release") {
     const title = field("title").trim();
-    run(form, () => collab.release(me, route.name, form.dataset.tag, { ...(title && { title }), notes: field("notes"), time: time() }));
+    const chosen = [...(form.elements.files?.files ?? [])];
+    const status = form.querySelector(".status");
+    run(form, async (state) => {
+      // The files first, kept by the sponsor for this device's work, then the record naming them.
+      const card = await records.card(state, route.owner, route.name);
+      const had = (await collab.releases(state, route.owner, route.name, card)).get(form.dataset.tag);
+      const files = new Map((had?.by === me ? had.files : []).map((f) => [f.name, f]));
+      for (const file of chosen) {
+        const workOn = settings.sponsor && (await storageChain(settings.sponsor, settings.chain));
+        if (!workOn) throw new Error("Files are kept by a sponsor that keeps files: set one in Settings.");
+        const volumes = fileVolumes(sdk, BLOB_TYPE, new Uint8Array(await file.arrayBuffer()));
+        await keep(sdk, settings.sponsor, workOn, volumes, { progress: ({ stored, total }) => (status.textContent = `Keeping ${file.name}: ${stored} of ${total} blocks…`) });
+        files.set(file.name, { name: file.name, cid: volumes[0].cid, size: file.size });
+      }
+      const record = { ...(title && { title }), notes: field("notes"), time: time(), ...(files.size && { files: [...files.values()] }) };
+      if (!collab.releaseFiles(record.files)) throw new Error("File names must be distinct, without / and not starting with a dot.");
+      return collab.release(me, route.name, form.dataset.tag, record);
+    });
   }
 });
 

@@ -9,7 +9,10 @@
 //   user/<a>/post/<id>                               { on: "<author>/<id>", body, time, review? }
 //   index/post/<author>/<id>/<post id>/<a>           "1"   lists it under the issue
 //   user/<m>/triage/<owner>/<name>/<author>/<id>     { state?, labels?, time }   a maintainer's word on it
-//   user/<m>/release/<name>/<tag>                    { title?, notes, time }     a maintainer's release
+//   user/<m>/release/<name>/<tag>                    { title?, notes, time, files? }  a maintainer's release
+//
+// A release's files are `[{ name, cid, size }]`: each a lattice-storage file
+// (git's blob layout, objects.mjs BLOB_TYPE) kept by a sponsor, read by CID.
 //   index/inbox/<to>/<time>/<id>/<a>                 { kind, repo, thread }      tells <to> of <a>'s issue or comment <id>
 //
 // Whoever writes an issue or comment also tells the people it concerns, in
@@ -164,6 +167,19 @@ export async function inbox(state, me, { limit = 100 } = {}) {
   return checked.filter(Boolean);
 }
 
+/** A release's files as written, or undefined unless every one is `{ name, cid, size }`. */
+export function releaseFiles(files = []) {
+  if (!Array.isArray(files) || files.length > 50) return undefined;
+  const names = new Set();
+  for (const f of files) {
+    if (!exactly(f, "name", "cid", "size") || !text(f.name, 200) || !/^[^/\\\0]+$/.test(f.name) || f.name.startsWith(".") || names.has(f.name)) return undefined;
+    if (!/^bafyrei[a-z2-7]{52}$/.test(f.cid) || !Number.isSafeInteger(f.size) || f.size < 0) return undefined;
+    names.add(f.name);
+  }
+  return files.map(({ name, cid, size }) => ({ name, cid, size }));
+}
+const exactly = (value, ...keys) => typeof value === "object" && value !== null && !Array.isArray(value) && Object.keys(value).sort().join() === [...keys].sort().join();
+
 function readTriage(value) {
   const r = parse(value);
   if (!r || !isTime(r.time)) return undefined;
@@ -262,9 +278,12 @@ export async function releases(state, owner, name, card) {
       const tag = key.slice(prefix.length);
       const r = parse(value);
       if (!r || !text(r.notes ?? "", 65536) || !isTime(r.time) || (r.title !== undefined && !text(r.title, 300))) continue;
+      const files = releaseFiles(r.files);
+      if (!files) continue;
+      const release = { by: m, title: r.title, notes: r.notes ?? "", time: r.time, files };
       // The owner's release, else the latest delegate's.
-      if (m === owner && m !== out.get(tag)?.by) out.set(tag, { by: m, title: r.title, notes: r.notes ?? "", time: r.time });
-      else if (!out.has(tag) || (out.get(tag).by !== owner && r.time > out.get(tag).time)) out.set(tag, { by: m, title: r.title, notes: r.notes ?? "", time: r.time });
+      if (m === owner && m !== out.get(tag)?.by) out.set(tag, release);
+      else if (!out.has(tag) || (out.get(tag).by !== owner && r.time > out.get(tag).time)) out.set(tag, release);
     }
   }
   return out;

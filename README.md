@@ -95,8 +95,11 @@ device's work for each fee, so taking part needs no coins.
   pushing a merge commit from a clone (the page shows how). Once the base
   branch contains the head's commit, the page shows it as merged. No record
   says so.
-- **Releases**: a maintainer writes notes for a tag; they show on the Tags
-  page.
+- **Releases**: a maintainer writes notes for a tag, with files if they
+  like; they show on the Tags page, each file a download read by its CID. A
+  release's files are kept by the sponsor, for the device's work. From a
+  terminal or CI: `trellis release <tag> --title <t> --notes <text> <file>...`
+  (every sponsor in `trellis.sponsor` keeps them).
 - **Search**: a repo's Search tab finds files by name and text on any branch
   or tag, reading the blocks in the browser (ky's 115 files: about 30 s the
   first time); the issue and pull request lists filter by words in a title,

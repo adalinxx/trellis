@@ -18,6 +18,8 @@ import { join } from "node:path";
 import * as sdk from "../vendor/lattice-sdk.js";
 import { git, objectReader, objectsBetween, store } from "../client/git.mjs";
 import * as records from "../client/records.mjs";
+import * as collab from "../client/collab.mjs";
+import { reader as blockReader } from "../client/browse.mjs";
 import { keep, sponsored } from "../client/sponsor.mjs";
 import { encode, fetchObjects } from "../client/transfer.mjs";
 import { changes, transaction } from "../client/write.mjs";
@@ -249,6 +251,18 @@ try {
   // a clone that lacks a branch is told to fetch first.
   assert.match(trellis(helperEnv(readerNode), cloneDir, "mirror", sponsorURL), /^\d+ blocks kept by /);
   console.log("trellis mirror: the repo's blocks kept again, made from a clone");
+
+  // trellis release: a tag's notes and a file, the file kept by the sponsor
+  // and read back by its CID.
+  const asset = join(work, "tool-v2.sh");
+  writeFileSync(asset, "#!/bin/sh\necho tool v2, packed\n");
+  assert.match(trellis(helperEnv(authorNode), tools, "release", "v2", "--title", "Two", "--notes", "The second tool.", asset), /released v2 with tool-v2\.sh/);
+  const released = (await collab.releases(await state(), carol.address, "tools", await records.card(await state(), carol.address, "tools"))).get("v2");
+  assert.equal(released.title, "Two");
+  assert.deepEqual(released.files.map((f) => [f.name, f.size]), [["tool-v2.sh", readFileSync(asset).length]]);
+  const assetBytes = await blockReader(sdk, load).blob(released.files[0].cid);
+  assert.equal(Buffer.from(assetBytes).toString(), readFileSync(asset, "utf8"));
+  console.log("trellis release: notes and a file, kept by the sponsor");
 
   // trellis import: a SHA-1 repository on master, signed, then pushed whole.
   const old = join(work, "old-project");

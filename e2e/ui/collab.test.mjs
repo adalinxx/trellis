@@ -9,7 +9,7 @@
 //   LATTICE_WALLET_WEB=<selfhold-wallet>/dist-web node --test e2e/ui/collab.test.mjs
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { createReadStream, mkdirSync, mkdtempSync, statSync, writeFileSync } from "node:fs";
+import { createReadStream, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { extname, join, normalize, resolve } from "node:path";
@@ -323,8 +323,13 @@ test("releases: Carol's shown on her tags; Bob writes one on his fork", async ()
   await page.goto(appURL(`/${bob}/garden/tags`));
   await page.locator(".write-release summary").click();
   await page.locator(".write-release").getByLabel("Notes").fill("My own harvest.");
+  await page.locator(".write-release").getByLabel("Files").setInputFiles({ name: "seeds.txt", mimeType: "text/plain", buffer: Buffer.from("carrot, bean\n") });
   await approve(page.getByRole("button", { name: "Save the release" }));
   await expect(page.locator(".release")).toContainText("My own harvest.", { timeout: 300_000 });
+  await expect(page.locator(".release .assets a")).toHaveText(["seeds.txt"]);
+  const [download] = await Promise.all([page.waitForEvent("download"), page.locator(".release .assets a").click()]);
+  assert.equal(download.suggestedFilename(), "seeds.txt");
+  assert.equal(readFileSync(await download.path(), "utf8"), "carrot, bean\n");
   assert.equal(BigInt((await account(authorNode, bob)).balance ?? 0), 0n, "Bob still holds no coins");
 });
 
