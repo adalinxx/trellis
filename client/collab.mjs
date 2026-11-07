@@ -9,15 +9,23 @@
 //   user/<a>/post/<id>                               { on: "<author>/<id>", body, time, review? }
 //   index/post/<author>/<id>/<post id>/<a>           "1"   lists it under the issue
 //   user/<m>/triage/<owner>/<name>/<author>/<id>     { state?, labels?, time }   a maintainer's word on it
-//   user/<m>/release/<name>/<tag>                    { title?, notes, time }     a maintainer's release
+//   user/<m>/release/<name>/<tag>                    { title?, notes, time, files? }  a maintainer's release
 //
+// A release's files are `[{ name, cid, size }]`: each a lattice-storage file
+// (git's blob layout, objects.mjs BLOB_TYPE) kept by a sponsor, read by CID.
+//   index/inbox/<to>/<time>/<id>/<a>                 { kind, repo, thread }      tells <to> of <a>'s issue or comment <id>
+//
+// Whoever writes an issue or comment also tells the people it concerns, in
+// the same transaction: the repo's maintainers, and for a comment the
+// thread's author and earlier commenters, and anyone it mentions by @handle. Each reads their inbox in one prefix read,
+// and a note counts only if the record it names is there.
 // A pull request is an issue with `head: "<a>/<name>:<branch>"` (any repo's
 // branch) and `base: "<branch>"` (the repo's). It is merged once the base
 // branch contains the head's commit: merging is a push, and needs no record.
 // A line review is a comment with `review: { commit, path, line, side }`:
 // the head commit it was made on, and a line of the new ("new") or old
 // ("old") side of that file's diff. Times are the writer's own claim.
-import { checkName } from "./records.mjs";
+import { checkName, maintainers } from "./records.mjs";
 
 const ID = /^[0-9a-f]{16}$/;
 const LABEL = /^[^\s,][^,]{0,49}$/;
@@ -72,6 +80,19 @@ export const triage = (m, owner, name, author, id, record) => [[triageKey(m, own
 /** Maintainer `m` writes the release of tag `tag` in their repo `name`. */
 export const release = (m, name, tag, record) => [[releaseKey(m, name, tag), json(record)]];
 
+/** The inbox key that tells `to` of `a`'s record `id`, written at `time`. */
+export const inboxKey = (to, time, id, a) => `index/inbox/${to}/${String(time).padStart(12, "0")}/${id}/${a}`;
+
+/**
+ * `a` tells each of `to` (but themself) of their issue or comment `id`:
+ * `note` is `{ kind: "issue" | "pull" | "comment" | "review", repo, thread: "<author>/<id>" }`.
+ */
+export const notify = (a, to, time, id, note) =>
+  [...new Set(to)].filter((t) => typeof t === "string" && t && t !== a && !t.includes("/")).slice(0, 50).map((t) => [inboxKey(t, time, id, a), json(note)]);
+
+/** The @handles a body mentions, at most ten, without the @. */
+export const mentions = (body) => [...new Set([...String(body).matchAll(/(?:^|[^\w@/])@([a-z0-9_]{1,32})\b/g)].map((m) => m[1]))].slice(0, 10);
+
 // ---- Reads, from a state view `{ get, list }` (state.mjs).
 
 /** `"<owner>/<name>"` as its parts. */
@@ -109,6 +130,57 @@ export function readPost(value, on) {
   return { on, body: r.body, time: r.time };
 }
 
+/**
+ * Who a new record on `<owner>/<name>` concerns: the repo's maintainers, and
+ * with `thread` (`{ author, id }`, a comment there) its author and everyone
+ * who commented. Plus `also` (mentioned).
+ */
+export async function concerned(state, owner, name, card, thread, also = []) {
+  if (!thread) return [...maintainers(owner, card), ...also];
+  return [thread.author, ...maintainers(owner, card), ...(await posts(state, thread.author, thread.id)).map((p) => p.by), ...also];
+}
+
+/**
+ * `me`'s inbox, newest first, at most `limit`: `[{ from, id, time, kind, repo,
+ * thread, title, body? }]`, each only if the issue or comment it names is
+ * there, by whom the note says, on the thread and repo it says.
+ */
+export async function inbox(state, me, { limit = 100, now = Math.floor(Date.now() / 1000) } = {}) {
+  const prefix = `index/inbox/${me}/`;
+  const notes = [];
+  for await (const [key, value] of state.list(prefix)) {
+    const [time, id, from, ...rest] = key.slice(prefix.length).split("/");
+    const note = parse(value);
+    // A note dated ahead of now (beyond clock skew) would sit on top for good: left out.
+    if (rest.length || !ID.test(id ?? "") || !/^\d{12}$/.test(time) || Number(time) > now + 3600 || !note || !["issue", "pull", "comment", "review"].includes(note.kind)) continue;
+    notes.push({ from, id, time: Number(time), kind: note.kind, repo: String(note.repo), thread: String(note.thread) });
+  }
+  const newest = notes.reverse().slice(0, limit);
+  const checked = await Promise.all(newest.map(async (n) => {
+    const [author, tid] = n.thread.split("/");
+    if (!author || !ID.test(tid ?? "")) return undefined;
+    const issue = readIssue(await state.get(issueKey(author, tid)), n.repo);
+    if (!issue) return undefined;
+    if (n.kind === "issue" || n.kind === "pull") return n.from === author && n.id === tid && Boolean(issue.head) === (n.kind === "pull") ? { ...n, title: issue.title, body: issue.body } : undefined;
+    const post = readPost(await state.get(postKey(n.from, n.id)), n.thread);
+    return post && Boolean(post.review) === (n.kind === "review") ? { ...n, title: issue.title, body: post.body, pull: Boolean(issue.head) } : undefined;
+  }));
+  return checked.filter(Boolean);
+}
+
+/** A release's files as written, or undefined unless every one is `{ name, cid, size }`. */
+export function releaseFiles(files = []) {
+  if (!Array.isArray(files) || files.length > 50) return undefined;
+  const names = new Set();
+  for (const f of files) {
+    if (!exactly(f, "name", "cid", "size") || !text(f.name, 200) || !/^[^/\\\0]+$/.test(f.name) || f.name.startsWith(".") || names.has(f.name)) return undefined;
+    if (!/^bafyrei[a-z2-7]{52}$/.test(f.cid) || !Number.isSafeInteger(f.size) || f.size < 0) return undefined;
+    names.add(f.name);
+  }
+  return files.map(({ name, cid, size }) => ({ name, cid, size }));
+}
+const exactly = (value, ...keys) => typeof value === "object" && value !== null && !Array.isArray(value) && Object.keys(value).sort().join() === [...keys].sort().join();
+
 function readTriage(value) {
   const r = parse(value);
   if (!r || !isTime(r.time)) return undefined;
@@ -126,8 +198,7 @@ async function collect(iterable) {
   return out;
 }
 
-/** The repo's maintainers: its owner and the delegates its card names. */
-export const maintainers = (owner, card) => [owner, ...(Array.isArray(card?.delegates) ? card.delegates.filter((d) => typeof d === "string" && d !== owner) : [])];
+export { maintainers };
 
 /**
  * Every issue and pull request on `<owner>/<name>`, newest first, each with
@@ -208,9 +279,12 @@ export async function releases(state, owner, name, card) {
       const tag = key.slice(prefix.length);
       const r = parse(value);
       if (!r || !text(r.notes ?? "", 65536) || !isTime(r.time) || (r.title !== undefined && !text(r.title, 300))) continue;
+      const files = releaseFiles(r.files);
+      if (!files) continue;
+      const release = { by: m, title: r.title, notes: r.notes ?? "", time: r.time, files };
       // The owner's release, else the latest delegate's.
-      if (m === owner && m !== out.get(tag)?.by) out.set(tag, { by: m, title: r.title, notes: r.notes ?? "", time: r.time });
-      else if (!out.has(tag) || (out.get(tag).by !== owner && r.time > out.get(tag).time)) out.set(tag, { by: m, title: r.title, notes: r.notes ?? "", time: r.time });
+      if (m === owner && m !== out.get(tag)?.by) out.set(tag, release);
+      else if (!out.has(tag) || (out.get(tag).by !== owner && r.time > out.get(tag).time)) out.set(tag, release);
     }
   }
   return out;

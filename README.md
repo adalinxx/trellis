@@ -28,6 +28,13 @@ git push origin main
 git clone trellis::<owner address>/<repo>                 # needs only trellis.node (or TRELLIS_NODE)
 ```
 
+Instead of a key file, git and `trellis` can sign with
+[Selfhold](https://github.com/adalinxx/selfhold-wallet), the account you use
+in the page: `trellis login` once, and each write after that opens a page on
+`127.0.0.1` that asks Selfhold's window to approve it, as `gh auth login
+--web` does. It sets `trellis.key` to `selfhold` and keeps the account in
+`trellis.account` (global git config).
+
 ### Testnet
 
 Trellis runs on testnet as `Nexus/testnet/trellis`, served publicly by
@@ -42,11 +49,11 @@ git config trellis.chain Nexus/testnet/trellis
 
 Testnet may be reset; don't keep anything only there.
 
-Clone from a node that keeps the repo's blocks (the sponsor's host keeps
-everything pushed through it). Any node can serve a clone, but one that
-doesn't hold the blocks fetches each from its peers, a few at a time: a
-3,200-object repo clones in about 16 s from the host and about 5 minutes
-through such a node.
+Any node that hosts the chain can serve a clone. The helper asks it which
+nodes host the chain (`/api/chain/endpoints`) and asks all of them at once for
+the blocks each holds, so blocks come from the nodes that keep them (the
+sponsors' hosts); only a block none of them holds is fetched from peers. ky's
+4,267 objects clone in about 45 s on testnet through either node.
 
 ### Browse
 
@@ -82,11 +89,111 @@ device's work for each fee, so taking part needs no coins.
 - **Pull requests** merge a branch of any copy of the repo (yours, or
   someone's fork) into one of its branches. The page shows its commits and
   its changes from the merge base, and anyone signed in can comment on any
-  line. A maintainer merges by pushing (the page shows how); once the base
+  line; a reviewer sees the commits since their last review on their own. A
+  maintainer merges in the page when the base is behind the branch (a
+  fast-forward: their push moves the base, with no new commit), or else by
+  pushing a merge commit from a clone (the page shows how). Once the base
   branch contains the head's commit, the page shows it as merged. No record
   says so.
-- **Releases**: a maintainer writes notes for a tag; they show on the Tags
-  page.
+- **Releases**: a maintainer writes notes for a tag, with files if they
+  like; they show on the Tags page, each file a download read by its CID. A
+  release's files are kept by the sponsor, for the device's work. From a
+  terminal or CI: `trellis release <tag> --title <t> --notes <text> <file>...`
+  (every sponsor in `trellis.sponsor` keeps them).
+- **Search**: a repo's Search tab finds files by name and text on any branch
+  or tag, reading the blocks in the browser (ky's 115 files: about 30 s the
+  first time); the issue and pull request lists filter by words in a title,
+  description, label or author.
+- **Inbox**: whoever opens an issue or pull request, or comments, tells the
+  repo's maintainers, the thread's author and commenters, and anyone they
+  mention by @handle, in the same transaction. The Inbox shows these notes,
+  newest first, each only if what it names is there; which are read is kept
+  on the device.
+
+### Names
+
+Wherever an address goes, an @handle from
+[Moniker](https://github.com/adalinxx/moniker), the names chain Lattice apps
+share, goes too: `git clone trellis::@alice/tools`, `trellis maintainers add
+@bob`, and `#/@alice/tools` in the page, which shows every account by the
+handle it shows. A handle stands for an account only while that account names
+it on Moniker and the handle points at it, Moniker's own rule; a handle sold
+or pointed elsewhere stops meaning the old account. Handles are read from
+`Nexus/moniker` (`trellis.moniker`, or Names in the page's Settings) through
+the same nodes.
+
+### Teams
+
+A repo's maintainers are its owner and the delegates the owner names. Each
+pushes with their own key, to the owner's address, and the latest push to a
+branch stands:
+
+```sh
+trellis maintainers                    # in a clone whose origin is the repo
+trellis maintainers add <address>      # the owner's key only
+trellis maintainers remove <address>   # branches stay where they are
+```
+
+Maintainers also close and label issues and write releases. Two pushes to one
+branch that land in the same block can't both stand: the one that loses says
+so (`another maintainer pushed to it at the same time`), and fetching and
+pushing again puts it on top.
+
+### CI
+
+A check is a CI result on a commit, signed by whoever ran it, as GitHub's
+commit statuses are. The page shows each commit's checks, and a pull
+request's on its head, counting only the repo's maintainers' and the runners
+its owner names:
+
+```sh
+trellis runners add <address>              # the owner: whose checks count
+trellis ci                                 # a runner: .trellis/ci on each new branch tip, results posted
+trellis check test pass --url <link>       # from any CI (GitHub Actions on an exported mirror, say)
+```
+
+`trellis ci` fetches `origin` every minute (`--once` for one pass), runs the
+commit's executable `.trellis/ci` in a scratch worktree with `CI=true`,
+`TRELLIS_COMMIT` and `TRELLIS_BRANCH` set, and posts pending, then pass or
+fail with the output's last lines. It runs the repo's own code, from the
+commit's files alone (no `.git`, no git config, a bare environment), but as
+your OS user: run it under an account of its own, holding only the runner's
+key, and only for repos you trust, as with any CI runner. Private repos have
+no checks or releases, since both are public records.
+
+### Private repos
+
+```sh
+trellis private                        # in a new repo's clone, before its first push
+trellis readers add <address>          # members who read but don't push
+trellis maintainers add <address>      # members who push too
+```
+
+A private repo's every block is sealed with the repo's key (AES-256-GCM), so
+the nodes and sponsors that keep and serve it can't read its files, messages
+or history. The key reaches each member sealed to their box key, an X25519
+key derived from their account key and published on their first push (or
+with `trellis box`). Removing a member makes a new key for every push from
+then on; members keep every key, so all history stays readable to them.
+Members read and push with key files, as git does; the page can't open a
+private repo. Public on the chain: its name, its branch and tag names, who
+its members are, and its files' sizes. Issues and pull requests are off.
+Sealing is deterministic, so pushes share blocks and `trellis mirror` works.
+
+### Keeping a repo
+
+A repo's blocks are kept by the sponsors that push or mirror it, each on its
+own node. `trellis.sponsor` may list several, comma-separated: every push is
+kept by each of them (the first pays the fee), so the repo outlives any one
+host. To have one more sponsor keep a whole repo, from an up-to-date clone:
+
+```sh
+trellis mirror https://<a sponsor your team runs>
+```
+
+The blocks are made from the clone, with the same CIDs, so nothing is
+downloaded. The chain itself (refs, issues, reviews, releases) is kept by
+every node that hosts it.
 
 ### Bring a repo from GitHub
 
@@ -118,11 +225,24 @@ GitHub URLs, so running it again writes only what changed (and finishes an
 import that stopped). It needs no coins. GitHub lets it make 60 requests an
 hour without `GITHUB_TOKEN`, 100 issues or comments each.
 
+To keep a GitHub copy while a team moves (so CI and tools that only know
+SHA-1 keep working), from a Trellis clone:
+
+```sh
+trellis export https://github.com/<org>/<repo>.git   # branches and tags, as SHA-1; again: only what is new
+```
+
+It is `trellis import` in reverse, by `git fast-export` and `fast-import`,
+with marks kept in `.git/trellis/export`. History that came from SHA-1 comes
+back with its old ids (signatures aside: they were stripped on import), so
+GitHub's copy of an imported repo keeps its commits. Branches and tags
+deleted here are deleted there.
+
 Each setting can also come from the environment: `TRELLIS_NODE`,
 `TRELLIS_SPONSOR`, `TRELLIS_KEY`, `TRELLIS_CHAIN` (`Nexus/trellis` by
 default). `trellis.node` may list several nodes, comma-separated: blocks are
 read from any of them, and writes go to the first. A push needs no coins. A
-rewrite needs `--force`, and a key can push only to its own address. The
+rewrite needs `--force`, and only the repo's maintainers can push to it. The
 helper keeps `$GIT_DIR/trellis/cids`, the CID of each object it has seen, so
 it never walks old history twice.
 
@@ -143,11 +263,17 @@ lattice child create Nexus/trellis --spec chain/spec.json \
 | Key | Value |
 | --- | --- |
 | `user/<a>/repo/<name>` | `{ description?, delegates? }`: the repo's card |
-| `user/<a>/repo/<name>/ref/<ref>` | `{ commit: <CID> }`: where `<a>`'s branch or tag points |
+| `user/<a>/repo/<name>/ref/<ref>` | `{ commit: <CID> \| null, seq }`: the owner's word on where a branch or tag points |
+| `user/<m>/push/<a>/<name>/ref/<ref>` | the same, maintainer `<m>`'s word on `<a>`'s repo |
 | `index/repo/<name>/<a>` | `"1"`: lists the repo under its name |
 
 `client/records.mjs` builds and reads them. A change names the value it
-replaces, so two pushes to one ref can't both apply.
+replaces, so two writes to one key can't both apply. The chain's policy sees
+only who signs, so each maintainer writes only their own words, and readers
+take the word with the highest `seq` from the maintainers the card names (at
+equal `seq`, the owner's, then the smaller commit CID), as Radicle's
+delegates make a canonical branch. A push sets `seq` one past the word it
+replaces; a null commit deletes the ref.
 
 Collaboration, `client/collab.mjs`:
 

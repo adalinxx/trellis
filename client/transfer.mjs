@@ -14,7 +14,7 @@ import { assemble, chunkLength } from "../vendor/storage-file.mjs";
  * encoded for its CID, and its Volumes are not returned (the other side has
  * it).
  */
-export async function encode(sdk, read, ids, known = new Map()) {
+export async function encode(sdk, read, ids, known = new Map(), { sealer } = {}) {
   const wanted = new Set(ids);
   const volumes = [];
   const pending = new Map();
@@ -34,7 +34,9 @@ export async function encode(sdk, read, ids, known = new Map()) {
         continue;
       }
       stack.pop();
-      const own = await toVolumes(sdk, object.type, object.raw, (child) => known.get(child));
+      // A private repo's blocks are sealed (seal.mjs), naming sealed children.
+      const plain = await toVolumes(sdk, object.type, object.raw, (child) => known.get(child));
+      const own = sealer ? sealer.seal(sdk, plain) : plain;
       known.set(id, own[0].cid);
       pending.delete(id);
       if (wanted.has(id)) volumes.push(...own);
@@ -65,16 +67,23 @@ async function each(items, width, run) {
  * as objects are rebuilt. Throws on a block that is not its CID or not an
  * object, and on a commit or tag whose git id is not the one it claims.
  */
-export async function fetchObjects(sdk, load, roots, ids = new Map(), { width = 64 } = {}) {
+export async function fetchObjects(sdk, load, roots, ids = new Map(), { width = 64, sealer } = {}) {
+  // A sealed block is checked against its CID, then opened (seal.mjs).
+  const plain = async (cid) => {
+    const bytes = await load(cid);
+    return sealer ? sealer.open(sdk, cid, bytes) : { cid, bytes };
+  };
   const objects = new Map();
   let frontier = [...new Set(roots)].filter((cid) => !ids.has(cid));
   while (frontier.length > 0) {
     const read = await each(frontier, width, async (cid) => {
-      const object = readObject(sdk, cid, await load(cid));
+      const block = await plain(cid);
+      const object = readObject(sdk, block.cid, block.bytes);
       if (!object) throw new Error(`${cid} is not a git object block`);
       if (object.type === "blob" && object.links.length > 0) {
         object.chunks = await each(object.links.map((chunkCID, index) => [chunkCID, index]), width, async ([chunkCID, index]) => {
-          const chunk = decodeBlock(sdk, chunkCID, await load(chunkCID));
+          const opened = await plain(chunkCID);
+          const chunk = decodeBlock(sdk, opened.cid, opened.bytes);
           const bytes = chunk?.bytes;
           if (!(bytes instanceof Uint8Array) || Object.keys(chunk).length !== 1 || bytes.length !== chunkLength(object.block, index)) {
             throw new Error(`${chunkCID} is not chunk ${index} of ${cid}`);

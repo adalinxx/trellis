@@ -3,8 +3,16 @@
 // Values are JSON strings; anything that doesn't parse is skipped.
 //
 //   user/<a>/repo/<name>             { description?, delegates? }  the repo's card
-//   user/<a>/repo/<name>/ref/<ref>   { commit: <CID> }             where <a>'s branch or tag points
+//   user/<a>/repo/<name>/ref/<ref>   { commit: <CID> | null, seq }  <a>'s word on where a branch or tag points
+//   user/<m>/push/<o>/<name>/ref/<ref>  { commit: <CID> | null, seq }  maintainer <m>'s word on <o>/<name>'s ref
 //   index/repo/<name>/<a>            "1"                           lists the repo under its name
+//
+// A repo's maintainers are its owner and the delegates its card names. Each
+// writes only their own word (the chain's policy sees only who signs, not the
+// card), and a ref is where the maintainers' word with the highest seq says:
+// a push sets seq one past the word it replaces, so the latest push wins, as
+// Radicle's delegates' refs make a canonical branch. A null commit deletes.
+// Words from anyone the card no longer names don't count.
 
 const NAME = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,99}$/;
 
@@ -29,6 +37,7 @@ export function checkRef(ref) {
 export const cardKey = (a, name) => `user/${a}/repo/${checkName(name)}`;
 export const refPrefix = (a, name) => `${cardKey(a, name)}/ref/`;
 export const refKey = (a, name, ref) => `${refPrefix(a, name)}${checkRef(ref)}`;
+export const pushPrefix = (m, owner, name) => `user/${m}/push/${owner}/${checkName(name)}/ref/`;
 export const listingKey = (name, a) => `index/repo/${checkName(name)}/${a}`;
 
 const json = (value) => (value === undefined ? undefined : JSON.stringify(value));
@@ -49,8 +58,21 @@ export const repo = (a, name, card = {}) => [
   [listingKey(name, a), card === undefined ? undefined : "1"],
 ];
 
-/** `a`'s `ref` in repo `name` pointing at commit block `commit`; undefined deletes it. */
-export const ref = (a, name, refName, commit) => [[refKey(a, name, refName), commit === undefined ? undefined : json({ commit })]];
+/**
+ * Maintainer `as`'s word that `owner`'s `ref` in repo `name` points at commit
+ * block `commit` (undefined: the ref is deleted), as push number `seq`.
+ */
+/** The highest seq counted: a word above it counts as it. */
+export const MAX_SEQ = 2 ** 52;
+/** The seq of a push replacing a word at `seq`. */
+export const nextSeq = (seq) => Math.min(seq + 1, MAX_SEQ);
+
+export const ref = (owner, name, refName, commit, { as = owner, seq = 1 } = {}) => [
+  [as === owner ? refKey(owner, name, refName) : `${pushPrefix(as, owner, name)}${checkRef(refName)}`, json({ commit: commit ?? null, seq })],
+];
+
+/** The repo's maintainers: its owner and the delegates its card names. */
+export const maintainers = (owner, card) => [owner, ...(Array.isArray(card?.delegates) ? [...new Set(card.delegates.filter((d) => typeof d === "string" && d !== owner && !d.includes("/")))] : [])];
 
 // Reads, from a state view `{ get, list }` (client/state.mjs).
 
@@ -61,19 +83,47 @@ export async function card(state, a, name) {
 }
 
 /** `a`'s refs in repo `name`: a Map from ref name to commit CID. */
-export async function refs(sdk, state, a, name) {
-  const prefix = refPrefix(a, name);
+export async function refs(sdk, state, a, name, theCard) {
   const out = new Map();
-  for await (const [key, value] of state.list(prefix)) {
-    const name = key.slice(prefix.length);
-    const commit = parse(value)?.commit;
-    try {
-      checkRef(name);
-      if (typeof commit === "string" && sdk.parseCID(commit).codec === 0x71) out.set(name, commit);
-    } catch {}
+  for (const [ref, word] of await words(sdk, state, a, name, theCard)) if (word.commit) out.set(ref, word.commit);
+  return out;
+}
+
+/**
+ * The word each ref of `a`'s repo `name` stands on: a Map from ref name to
+ * `{ commit, seq, by }`, commit null for a deleted ref. Pass the card if it
+ * is already read.
+ */
+export async function words(sdk, state, a, name, theCard) {
+  const theirs = maintainers(a, theCard === undefined ? await card(state, a, name) : theCard);
+  const all = await Promise.all(theirs.map(async (m) => {
+    const prefix = m === a ? refPrefix(a, name) : pushPrefix(m, a, name);
+    const found = [];
+    for await (const [key, value] of state.list(prefix)) {
+      const ref = key.slice(prefix.length);
+      const word = parse(value);
+      const seq = word?.seq ?? 0;
+      try {
+        checkRef(ref);
+        if (!Number.isSafeInteger(seq) || seq < 0) continue;
+        // Clamped, so a word can't climb out of reach: at the cap, the owner's word wins.
+        word.seq = Math.min(seq, MAX_SEQ);
+        if (word.commit === null || (typeof word.commit === "string" && sdk.parseCID(word.commit).codec === 0x71)) found.push([ref, { commit: word.commit, seq: word.seq, by: m }]);
+      } catch {}
+    }
+    return found;
+  }));
+  const out = new Map();
+  for (const [ref, word] of all.flat()) {
+    const held = out.get(ref);
+    if (!held || beats(word, held, a)) out.set(ref, word);
   }
   return out;
 }
+
+// Higher seq; at equal seq (two pushes at once) the owner's, then the smaller commit.
+const beats = (x, y, owner) =>
+  x.seq !== y.seq ? x.seq > y.seq : x.by === owner || y.by === owner ? x.by === owner : (x.commit ?? "") !== (y.commit ?? "") ? (x.commit ?? "") < (y.commit ?? "") : x.by < y.by;
 
 /** The accounts with a repo called `name`. */
 export async function owners(state, name) {

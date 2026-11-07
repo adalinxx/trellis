@@ -109,3 +109,35 @@ test("a source is named without paths or credentials", () => {
   assert.equal(sourceLabel("/home/someone/work/repo.git/"), "repo");
   assert.equal(sourceLabel("file:///home/someone/work/repo"), "repo");
 });
+
+test("an imported repository exports back to SHA-1 with its old ids, and again only what is new", async () => {
+  const { toSha1 } = await import("./export.mjs");
+  const work = mkdtempSync(join(tmpdir(), "trellis-export-"));
+  const old = join(work, "old");
+  mkdirSync(old);
+  const g = (repo, ...args) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8", env: { ...process.env, GIT_AUTHOR_DATE: "1700000000 +0000", GIT_COMMITTER_DATE: "1700000000 +0000" } }).trim();
+  g(old, "init", "-q", "--object-format=sha1", "-b", "main");
+  g(old, "config", "user.name", "Dana");
+  g(old, "config", "user.email", "dana@example.com");
+  writeFileSync(join(old, "a.txt"), "a\n");
+  g(old, "add", "-A");
+  g(old, "commit", "-q", "-m", "first");
+  g(old, "tag", "-a", "-m", "one", "v1");
+  const dest = join(work, "new");
+  await importRepository(old, dest);
+  const { copy } = toSha1(dest);
+  assert.equal(g(copy, "rev-parse", "refs/heads/main"), g(old, "rev-parse", "main"), "the same SHA-1 commit");
+  assert.equal(g(copy, "rev-parse", "refs/tags/v1"), g(old, "rev-parse", "v1"), "the same SHA-1 tag");
+  // A new commit on Trellis's side, then a deleted tag: the copy follows.
+  g(dest, "config", "user.name", "Dana");
+  g(dest, "config", "user.email", "dana@example.com");
+  writeFileSync(join(dest, "b.txt"), "b\n");
+  g(dest, "add", "-A");
+  g(dest, "commit", "-q", "-m", "second");
+  g(dest, "tag", "-d", "v1");
+  toSha1(dest);
+  assert.equal(g(copy, "log", "--format=%s", "main"), "second\nfirst");
+  assert.equal(g(copy, "rev-parse", "main~1"), g(old, "rev-parse", "main"));
+  assert.equal(g(copy, "tag"), "");
+  g(copy, "fsck", "--strict");
+});

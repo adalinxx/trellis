@@ -157,3 +157,49 @@ test("a block that lies about its git id is refused", async () => {
   // And bytes that are not their CID are no object at all.
   await assert.rejects(fetchObjects(sdk, async () => forged, [known.get(head)]), /not a git object block/);
 });
+
+test("a private repo's blocks are sealed, the same each time, and open only with its key", async () => {
+  const { sealer, newRepoKey } = await import("./seal.mjs");
+  const { repo, head } = await sealedSample();
+  const seal = sealer(new Map([[1, newRepoKey()]]), 1);
+  const objects = objectReader(repo);
+  const encodeWith = async (with_) => {
+    const known = new Map();
+    const volumes = await encode(sdk, objects.read, objectsBetween(repo, [head]), known, { sealer: with_ });
+    return { volumes, known };
+  };
+  let sealed, again, plainOnes;
+  try {
+    sealed = await encodeWith(seal);
+    again = await encodeWith(seal);
+    plainOnes = await encodeWith(undefined);
+  } finally {
+    objects.close();
+  }
+  assert.deepEqual(sealed.volumes.map((v) => v.cid), again.volumes.map((v) => v.cid), "sealing is deterministic");
+  const blocks = new Map(sealed.volumes.flatMap((v) => Object.entries(v.entries)));
+  const text = [...blocks.values()].map((b) => Buffer.from(b, "base64").toString("latin1")).join("");
+  assert.ok(!text.includes("secret plans"), "no file text in the clear");
+  assert.ok(!text.includes("Test"), "no author in the clear");
+  assert.equal(new Set(plainOnes.volumes.map((v) => v.cid)).size > 0, true);
+  assert.ok(sealed.volumes.every((v) => !plainOnes.volumes.some((p) => p.cid === v.cid)), "no block shared with the public encoding");
+  const load = async (cid) => new Uint8Array(Buffer.from(blocks.get(cid), "base64"));
+  const back = await fetchObjects(sdk, load, [sealed.known.get(head)], new Map(), { sealer: seal });
+  assert.equal(back.at(-1).id, head);
+  assert.equal(back.length, plainOnes.volumes.length > 0 ? back.length : 0);
+  await assert.rejects(fetchObjects(sdk, load, [sealed.known.get(head)], new Map(), { sealer: sealer(new Map([[1, newRepoKey()]]), 1) }));
+  await assert.rejects(fetchObjects(sdk, load, [sealed.known.get(head)]), /not a git object block/);
+});
+
+async function sealedSample() {
+  const repo = mkdtempSync(join(tmpdir(), "trellis-sealed-"));
+  const run = (...args) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" }).trim();
+  run("init", "-q", "--object-format=sha256", "-b", "main");
+  run("config", "user.name", "Test");
+  run("config", "user.email", "test@example.com");
+  writeFileSync(join(repo, "plans.txt"), "secret plans\n");
+  writeFileSync(join(repo, "big.bin"), Buffer.alloc(2.5 * (1 << 20), 3));
+  run("add", "-A");
+  run("commit", "-q", "-m", "first");
+  return { repo, head: run("rev-parse", "main") };
+}
