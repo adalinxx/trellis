@@ -437,3 +437,33 @@ export async function accept(gitDir, { say = () => {} } = {}) {
   execFileSync("git", ["--git-dir", gitDir, "remote", "set-url", "origin", `trellis::${me.address}/${toName}`]);
   return `${me.address}/${toName}`;
 }
+
+/**
+ * `trellis fork`, in a clone of someone's repo: makes this key's account a
+ * fork of it (records.fork: the same name, the original's refs, nothing
+ * uploaded), then, as `gh repo fork` does, renames `origin` to `upstream`
+ * and makes the fork `origin`. A private repo isn't forked: its copy would
+ * be public.
+ */
+export async function forkRepo(gitDir, { say = () => {} } = {}) {
+  const { execFileSync } = await import("node:child_process");
+  const repo = await origin(gitDir, { say });
+  const { sdk, owner, name, chain } = repo;
+  const me = repo.signer(say).address;
+  if (me === owner) throw new Error(`${owner}/${name} is yours already`);
+  const state = await chain.state();
+  const card = await records.card(state, owner, name);
+  const refs = await records.refs(sdk, state, owner, name, card ?? null);
+  if (!card && !refs.size) throw new Error(`${owner}/${name} doesn't exist`);
+  const git = (...args) => execFileSync("git", ["--git-dir", gitDir, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+  // origin becomes upstream; an upstream already there must be the same repo.
+  const remotes = git("remote").split("\n");
+  const originURL = git("remote", "get-url", "origin");
+  if (remotes.includes("upstream") && git("remote", "get-url", "upstream") !== originURL) throw new Error(`this clone's upstream is ${git("remote", "get-url", "upstream")}, not ${originURL}: remove or rename it first`);
+  const writes = records.fork(me, owner, name, card, refs, await records.card(state, me, name));
+  await repo.write(writes, { say, what: `Fork ${name}` });
+  if (remotes.includes("upstream")) git("remote", "remove", "origin");
+  else git("remote", "rename", "origin", "upstream");
+  git("remote", "add", "origin", `trellis::${me}/${name}`);
+  return `${me}/${name}`;
+}

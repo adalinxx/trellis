@@ -202,6 +202,8 @@ test("Bob signs in with a passkey and forks Carol's garden, coinless", async () 
   await expect(page).toHaveURL(new RegExp(`#/${bob}/garden$`), { timeout: 300_000 });
   await expect(page.locator(".fork-of")).toContainText("Forked from");
   await expect(page.locator(".entry")).toHaveText(["src", "README.md"]);
+  await page.goto(appURL(`${garden()}/forks`));
+  await expect(page.locator(".forks li a")).toHaveAttribute("href", new RegExp(`#/${bob}/garden$`));
   assert.equal(BigInt((await account(authorNode, bob)).balance ?? 0), 0n, "Bob holds no coins");
 });
 

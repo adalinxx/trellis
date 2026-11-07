@@ -281,6 +281,16 @@ try {
   assert.match(tipChecks[0].summary, /checking origin\/main/);
   console.log("ci: .trellis/ci run on the tip and its result posted; a stranger's check not counted");
 
+  // A fork from git: Alice's copy of Carol's tools, the original as upstream.
+  const aliceFork = join(work, "tools-alice-fork");
+  gitWith(helperEnv(authorNode, aliceKey), work, "clone", "-q", address, aliceFork);
+  trellis(helperEnv(authorNode, aliceKey), aliceFork, "fork");
+  assert.equal(run(aliceFork, "remote", "get-url", "origin"), `trellis::${alice.address}/tools`);
+  assert.equal(run(aliceFork, "remote", "get-url", "upstream"), address);
+  assert.deepEqual(await records.forks(await state(), carol.address, "tools"), [alice.address]);
+  assert.deepEqual([...(await records.refs(sdk, await state(), alice.address, "tools"))], [...(await records.refs(sdk, await state(), carol.address, "tools"))]);
+  console.log("fork: from git, nothing uploaded; origin the fork, upstream the original");
+
   // A transfer: Carol offers a repo to Alice, who takes it; the old address
   // then clones and pushes where it is now, and Carol is no maintainer there.
   const plot = newRepo(join(work, "plot"));

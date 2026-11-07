@@ -26,7 +26,7 @@ export function parseRoute(hash) {
   if (view === "issues" || view === "pulls") return ref === "new" ? { view: `${view}-new`, owner, name } : { view, owner, name, closed: query.get("state") === "closed", ...(query.get("q") && { q: query.get("q") }) };
   if (view === "issue" || view === "pull") return { view, owner, name, author: ref, id: path[0], tab: path[1] === "files" || path[1] === "commits" ? path[1] : "conversation", ...(query.get("since") && { since: query.get("since") }) };
   if (view === "commits") return { view, owner, name, ref, limit: Number(query.get("n")) || 30 };
-  if (view === "branches" || view === "tags") return { view, owner, name };
+  if (view === "branches" || view === "tags" || view === "forks") return { view, owner, name };
   if (view === "search") return { view, owner, name, ref, q: query.get("q") ?? "" };
   if (view === "tree" || view === "blob") return { view, owner, name, ref, path: path.join("/") };
   return { view: "code", owner, name };
@@ -49,7 +49,7 @@ export function href({ view, owner, name, ref, path, cid, limit, closed, author,
   if (view === "search") return `${base}/search/${e(ref ?? "HEAD")}${q ? `?q=${e(q)}` : ""}`;
   if (view === "issues-new" || view === "pulls-new") return `${base}/${view.slice(0, -4)}/new`;
   if (view === "issue" || view === "pull") return `${base}/${view}/${e(author)}/${e(id)}${tab && tab !== "conversation" ? `/${tab}` : ""}${since ? `?since=${e(since)}` : ""}`;
-  if (view === "branches" || view === "tags") return `${base}/${view}`;
+  if (view === "branches" || view === "tags" || view === "forks") return `${base}/${view}`;
   if (view === "tree" || view === "blob") return `${base}/${view}/${e(ref)}${path ? `/${path.split("/").map(e).join("/")}` : ""}`;
   return base;
 }

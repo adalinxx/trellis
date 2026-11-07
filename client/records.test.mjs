@@ -111,3 +111,23 @@ test("a repo moves only when both cards say so", async () => {
   const loop = memory([...records.repo("a", "r", { movedTo: "b/r", movedFrom: "b/r" }), ...records.repo("b", "r", { movedTo: "a/r", movedFrom: "a/r" })]);
   assert.equal((await records.whereNow(loop, "a", "r")).owner, "b", "a loop ends");
 });
+
+test("a fork: the same name, the original's refs, listed among its forks", async () => {
+  const refs = new Map([[MAIN, at(1)]]);
+  const state = memory([
+    ...records.repo("olga", "r", { description: "d" }),
+    ...records.ref("olga", "r", MAIN, at(1)),
+    ...records.fork("pat", "olga", "r", { description: "d" }, refs),
+    ...records.repo("quin", "r", {}),
+  ]);
+  assert.deepEqual(await records.card(state, "pat", "r"), { forkOf: "olga/r", description: "d" });
+  assert.equal((await records.refs(sdk, state, "pat", "r")).get(MAIN), at(1));
+  assert.deepEqual(await records.forks(state, "olga", "r"), ["pat"], "a same-named repo that isn't a fork isn't listed");
+});
+
+test("a fork is made once, never over a repo you have, never of a private one", () => {
+  const refs = new Map([[MAIN, at(1)]]);
+  assert.throws(() => records.fork("pat", "olga", "r", {}, refs, { forkOf: "olga/r" }), /forked olga\/r already/);
+  assert.throws(() => records.fork("pat", "olga", "r", {}, refs, {}), /already have a repo named r/);
+  assert.throws(() => records.fork("pat", "olga", "r", { private: { keys: [{ v: 1, to: {} }] } }, refs), /private/);
+});
