@@ -17,7 +17,7 @@
 // A line review is a comment with `review: { commit, path, line, side }`:
 // the head commit it was made on, and a line of the new ("new") or old
 // ("old") side of that file's diff. Times are the writer's own claim.
-import { checkName } from "./records.mjs";
+import { checkName, maintainers } from "./records.mjs";
 
 const ID = /^[0-9a-f]{16}$/;
 const LABEL = /^[^\s,][^,]{0,49}$/;
@@ -126,8 +126,7 @@ async function collect(iterable) {
   return out;
 }
 
-/** The repo's maintainers: its owner and the delegates its card names. */
-export const maintainers = (owner, card) => [owner, ...(Array.isArray(card?.delegates) ? card.delegates.filter((d) => typeof d === "string" && d !== owner) : [])];
+export { maintainers };
 
 /**
  * Every issue and pull request on `<owner>/<name>`, newest first, each with

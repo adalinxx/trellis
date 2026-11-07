@@ -139,14 +139,19 @@ export async function main(argv = process.argv.slice(2)) {
   const cache = cidCache(gitDir);
 
   // The remote's refs: ref name → { cid, id }, the id as the commit block claims it.
-  let remote;
+  let remote, card;
   const remoteRefs = async () => {
     if (remote) return remote;
     remote = new Map();
-    const found = await records.refs(sdk, await chain.state(), owner, name);
-    for (const [ref, cid] of found) {
-      const object = readObject(sdk, cid, await chain.block(cid));
-      if (object?.type === "commit" || object?.type === "tag") remote.set(ref, { cid, id: object.block.id });
+    const state = await chain.state();
+    card = await records.card(state, owner, name);
+    for (const [ref, word] of await records.words(sdk, state, owner, name, card ?? null)) {
+      if (!word.commit) {
+        remote.set(ref, { seq: word.seq });
+        continue;
+      }
+      const object = readObject(sdk, word.commit, await chain.block(word.commit));
+      if (object?.type === "commit" || object?.type === "tag") remote.set(ref, { cid: word.commit, id: object.block.id, seq: word.seq });
     }
     return remote;
   };
@@ -167,7 +172,7 @@ export async function main(argv = process.argv.slice(2)) {
     } else if (line === "list" || line === "list for-push") {
       const refs = await remoteRefs();
       out(":object-format sha256\n");
-      for (const [ref, { id }] of refs) out(`${id} ${ref}\n`);
+      for (const [ref, { id }] of refs) if (id) out(`${id} ${ref}\n`);
       // HEAD: main, else master, else the first branch.
       const branches = [...refs.keys()].filter((ref) => ref.startsWith("refs/heads/")).sort();
       const head = ["refs/heads/main", "refs/heads/master"].find((ref) => refs.has(ref)) ?? branches[0];
@@ -190,7 +195,7 @@ export async function main(argv = process.argv.slice(2)) {
 
   async function fetchInto(ids) {
     requireSha256(gitDir);
-    const byId = new Map([...(await remoteRefs()).values()].map(({ id, cid }) => [id, cid]));
+    const byId = new Map([...(await remoteRefs()).values()].filter(({ id }) => id).map(({ id, cid }) => [id, cid]));
     const roots = ids.map((id) => byId.get(id)).filter(Boolean);
     const held = cache.byCID();
     say(`fetching ${owner}/${name}`);
@@ -210,9 +215,11 @@ export async function main(argv = process.argv.slice(2)) {
     if (!sponsor) return fail("no sponsor: set trellis.sponsor (git config) or TRELLIS_SPONSOR");
     const key = JSON.parse(readFileSync(keyFile, "utf8"));
     const me = sdk.accountFromPrivateKey(sdk.hexToBytes(key.privateKey));
-    if (me.address !== owner) return fail(`this key is ${me.address}; push to trellis::${me.address}/${name}`);
-
     const refs = await remoteRefs();
+    if (!records.maintainers(owner, card).includes(me.address)) {
+      return fail(`this key is ${me.address}, not one of ${owner}/${name}'s maintainers; push to trellis::${me.address}/${name}`);
+    }
+    if (!card && me.address !== owner) return fail(`${owner}/${name} doesn't exist`);
     const updates = [];
     const replies = [];
     for (const spec of specs) {
@@ -225,7 +232,7 @@ export async function main(argv = process.argv.slice(2)) {
         continue;
       }
       const id = src === "" ? undefined : git(gitDir, "rev-parse", src);
-      const old = refs.get(dst);
+      const old = refs.get(dst)?.id && refs.get(dst);
       if (id && old && !force && old.id !== id) {
         let ancestor = false;
         try {
@@ -238,15 +245,14 @@ export async function main(argv = process.argv.slice(2)) {
         }
       }
       updates.push({ dst, id });
-      replies.push(`ok ${dst}\n`);
     }
     const moving = updates.filter((u) => u.id);
     if (updates.length === 0) return replies.join("");
 
     // What the remote has stands in for all it holds: its refs' CIDs.
     const known = new Map(cache.byId);
-    for (const { id, cid } of refs.values()) known.set(id, cid);
-    const have = [...refs.values()].map((r) => r.id).filter(existsObject);
+    for (const { id, cid } of refs.values()) if (id) known.set(id, cid);
+    const have = [...refs.values()].map((r) => r.id).filter((id) => id && existsObject(id));
     const objects = objectReader(gitDir);
     let volumes;
     try {
@@ -266,14 +272,16 @@ export async function main(argv = process.argv.slice(2)) {
     cache.save();
 
     const state = await chain.state();
+    // A ref already where it's asked to be needs no word.
+    const moved = updates.filter(({ dst, id }) => (refs.get(dst)?.cid ?? undefined) !== (id && known.get(id)));
     const writes = [
-      ...((await records.card(state, owner, name)) ? [] : records.repo(owner, name, {})),
-      ...updates.flatMap(({ dst, id }) => records.ref(owner, name, dst, id && known.get(id))),
+      ...(card ? [] : records.repo(owner, name, {})),
+      ...moved.flatMap(({ dst, id }) => records.ref(owner, name, dst, id && known.get(id), { as: me.address, seq: (refs.get(dst)?.seq ?? 0) + 1 })),
     ];
     const actions = await changes(state, writes);
     if (actions.length > 0) {
       say("writing refs, the fee paid with this machine's work");
-      const draft = transaction({ owner, actions, nonce: await chain.nonce(owner), chainPath });
+      const draft = transaction({ owner: me.address, actions, nonce: await chain.nonce(me.address), chainPath });
       const payload = await sponsored(sdk, sponsor, draft, sdk.hexToBytes(key.privateKey));
       const response = await chain.submit(payload);
       if (!response.ok) {
@@ -285,6 +293,13 @@ export async function main(argv = process.argv.slice(2)) {
         for (const [k, v] of writes) if ((await now.get(k)) !== v) return false;
         return true;
       }, Number(process.env.TRELLIS_WAIT_SECONDS ?? 600));
+    }
+    // Another maintainer's push can land in the same block with the same seq,
+    // and only one word stands; say which refs this push didn't move.
+    const now = moved.length ? await records.words(sdk, await chain.state(), owner, name) : new Map();
+    for (const { dst, id } of updates) {
+      const lost = moved.some((u) => u.dst === dst) && (now.get(dst)?.commit ?? undefined) !== (id && known.get(id));
+      replies.push(lost ? `error ${dst} another maintainer pushed to it at the same time; fetch and push again\n` : `ok ${dst}\n`);
     }
     return replies.join("");
   }

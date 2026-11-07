@@ -88,6 +88,23 @@ device's work for each fee, so taking part needs no coins.
 - **Releases**: a maintainer writes notes for a tag; they show on the Tags
   page.
 
+### Teams
+
+A repo's maintainers are its owner and the delegates the owner names. Each
+pushes with their own key, to the owner's address, and the latest push to a
+branch stands:
+
+```sh
+trellis maintainers                    # in a clone whose origin is the repo
+trellis maintainers add <address>      # the owner's key only
+trellis maintainers remove <address>   # branches stay where they are
+```
+
+Maintainers also close and label issues and write releases. Two pushes to one
+branch that land in the same block can't both stand: the one that loses says
+so (`another maintainer pushed to it at the same time`), and fetching and
+pushing again puts it on top.
+
 ### Bring a repo from GitHub
 
 ```sh
@@ -122,7 +139,7 @@ Each setting can also come from the environment: `TRELLIS_NODE`,
 `TRELLIS_SPONSOR`, `TRELLIS_KEY`, `TRELLIS_CHAIN` (`Nexus/trellis` by
 default). `trellis.node` may list several nodes, comma-separated: blocks are
 read from any of them, and writes go to the first. A push needs no coins. A
-rewrite needs `--force`, and a key can push only to its own address. The
+rewrite needs `--force`, and only the repo's maintainers can push to it. The
 helper keeps `$GIT_DIR/trellis/cids`, the CID of each object it has seen, so
 it never walks old history twice.
 
@@ -143,11 +160,17 @@ lattice child create Nexus/trellis --spec chain/spec.json \
 | Key | Value |
 | --- | --- |
 | `user/<a>/repo/<name>` | `{ description?, delegates? }`: the repo's card |
-| `user/<a>/repo/<name>/ref/<ref>` | `{ commit: <CID> }`: where `<a>`'s branch or tag points |
+| `user/<a>/repo/<name>/ref/<ref>` | `{ commit: <CID> \| null, seq }`: the owner's word on where a branch or tag points |
+| `user/<m>/push/<a>/<name>/ref/<ref>` | the same, maintainer `<m>`'s word on `<a>`'s repo |
 | `index/repo/<name>/<a>` | `"1"`: lists the repo under its name |
 
 `client/records.mjs` builds and reads them. A change names the value it
-replaces, so two pushes to one ref can't both apply.
+replaces, so two writes to one key can't both apply. The chain's policy sees
+only who signs, so each maintainer writes only their own words, and readers
+take the word with the highest `seq` from the maintainers the card names (at
+equal `seq`, the owner's, then the smaller commit CID), as Radicle's
+delegates make a canonical branch. A push sets `seq` one past the word it
+replaces; a null commit deletes the ref.
 
 Collaboration, `client/collab.mjs`:
 

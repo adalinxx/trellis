@@ -219,6 +219,31 @@ try {
   assert.match(gitFails(helperEnv(authorNode, aliceKey), tools, "push", "origin", "main"), /this key is/);
   console.log("git push: a rewrite only with --force; another account's key refused");
 
+  // A team: Carol makes Alice a maintainer; Alice pushes with her own key,
+  // and a clone sees her commit. Once Carol drops her, Alice can't push, and
+  // main stays at Alice's commit.
+  const trellis = (env, cwd, ...args) => execFileSync(here("../bin/trellis"), args, { cwd, encoding: "utf8", env, stdio: ["ignore", "pipe", "pipe"] }).trim();
+  assert.match(trellis(helperEnv(authorNode), tools, "maintainers", "add", alice.address), new RegExp(alice.address));
+  assert.throws(() => trellis(helperEnv(authorNode, aliceKey), tools, "maintainers", "add", bob.address), /only .* the owner/);
+  gitWith(helperEnv(authorNode, aliceKey), tools, "push", "-q", "origin", "main");
+  const byAlice = run(tools, "rev-parse", "main");
+  await until("the reader's node has Alice's push", async () => {
+    const words = await records.words(sdk, await state(readerNode), carol.address, "tools");
+    return words.get("refs/heads/main")?.by === alice.address;
+  });
+  gitWith(helperEnv(readerNode), cloneDir, "fetch", "-q", "origin");
+  assert.equal(run(cloneDir, "rev-parse", "origin/main"), byAlice);
+  // main stands on Alice's push; dropping her re-states it as Carol's.
+  trellis(helperEnv(authorNode), tools, "maintainers", "remove", alice.address);
+  assert.deepEqual((await records.words(sdk, await state(), carol.address, "tools")).get("refs/heads/main")?.by, carol.address);
+  run(tools, "commit", "-q", "--allow-empty", "-m", "by Alice, dropped");
+  assert.match(gitFails(helperEnv(authorNode, aliceKey), tools, "push", "origin", "main"), /not one of .* maintainers/);
+  run(tools, "reset", "-q", "--hard", byAlice);
+  await until("the reader's node has the new card", async () => !(await records.card(await state(readerNode), carol.address, "tools"))?.delegates?.length);
+  gitWith(helperEnv(readerNode), cloneDir, "fetch", "-q", "origin");
+  assert.equal(run(cloneDir, "rev-parse", "origin/main"), byAlice);
+  console.log("team: a maintainer pushes with their own key; once dropped, can't, and main stays put");
+
   // trellis import: a SHA-1 repository on master, signed, then pushed whole.
   const old = join(work, "old-project");
   mkdirSync(old);
