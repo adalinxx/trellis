@@ -139,7 +139,7 @@ export async function owners(state, name) {
 
 const place = (text) => {
   const m = typeof text === "string" ? /^([^/]+)\/([^/]+)$/.exec(text) : null;
-  if (!m || !NAME.test(m[2])) return undefined;
+  if (!m || !NAME.test(m[2]) || m[2].endsWith(".lock") || m[1].includes("/")) return undefined;
   return { owner: m[1], name: m[2] };
 };
 

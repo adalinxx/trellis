@@ -298,8 +298,14 @@ try {
   const viaOld = join(work, "plot-old-url");
   gitWith(helperEnv(readerNode), work, "clone", "-q", `trellis::${carol.address}/plot`, viaOld);
   assert.equal(readFileSync(join(viaOld, "plot.txt"), "utf8"), "beans\n");
+  assert.equal(run(viaOld, "remote", "get-url", "origin"), `trellis::${alice.address}/plot`, "the clone trusts the new address, not the old");
   run(plot, "commit", "-q", "--allow-empty", "-m", "by the old owner");
+  assert.match(gitFails(helperEnv(authorNode), plot, "push", "origin", "main"), /moved to .*push there/, "a push through the old address stops once");
+  assert.equal(run(plot, "remote", "get-url", "origin"), `trellis::${alice.address}/plot`);
   assert.match(gitFails(helperEnv(authorNode), plot, "push", "origin", "main"), /not one of .*plot's maintainers/);
+  assert.throws(() => trellis(helperEnv(authorNode, aliceKey), offered, "accept"), /isn't offered/, "accepting again writes nothing");
+  run(plot, "remote", "set-url", "origin", `trellis::${carol.address}/plot`);
+  assert.throws(() => trellis(helperEnv(authorNode), plot, "transfer", "--cancel"), /already moved to .*theirs now/, "a move taken can't be taken back");
   console.log("transfer: offered, taken; the old address leads to the new one; the old owner no longer pushes");
 
   // A private repo: sealed blocks; its owner and a reader clone it, nobody

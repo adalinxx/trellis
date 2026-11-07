@@ -371,6 +371,8 @@ export async function transfer(gitDir, to, { cancel = false, say = () => {} } = 
   if (repo.signer(say).address !== owner) throw new Error(`only ${owner}, the owner, gives ${owner}/${name} away`);
   const card = await records.card(await chain.state(), owner, name);
   if (!card) throw new Error(`${owner}/${name} doesn't exist`);
+  const taken = await records.movedTo(await chain.state(), owner, name, card);
+  if (taken) throw new Error(`${owner}/${name} already moved to ${taken.owner}/${taken.name}: it is theirs now`);
   if (cancel) {
     const { movedTo: _offer, ...rest } = card;
     await repo.write(records.repo(owner, name, rest), { say, what: `Keep ${name}` });
@@ -404,10 +406,17 @@ export async function accept(gitDir, { say = () => {} } = {}) {
   const [toOwner, toName] = String(card?.movedTo ?? "").split("/");
   if (toOwner !== me.address || !toName) throw new Error(`${owner}/${name} isn't offered to ${me.address}${card?.movedTo ? ` (it's offered to ${card.movedTo})` : ""}`);
   const there = await records.card(state, me.address, toName);
-  if (there && there.movedFrom !== `${owner}/${name}`) throw new Error(`you already have a repo named ${toName}: offer it under another name`);
+  if (there?.movedFrom === `${owner}/${name}`) {
+    // Taken already (a run cut short before setting origin): nothing to write again.
+    execFileSync("git", ["--git-dir", gitDir, "remote", "set-url", "origin", `trellis::${me.address}/${toName}`]);
+    return `${me.address}/${toName}`;
+  }
+  if (there) throw new Error(`you already have a repo named ${toName}: offer it under another name`);
+  for await (const _ of state.list(records.refPrefix(me.address, toName))) throw new Error(`you once had a repo named ${toName}, whose refs are still there: offer it under another name`);
   const keep = (list) => (Array.isArray(list) ? [...new Set(list.filter((a) => typeof a === "string" && a !== me.address && a !== owner))] : undefined);
   const next = {
     ...(typeof card.description === "string" && { description: card.description }),
+    ...(typeof card.forkOf === "string" && { forkOf: card.forkOf }),
     ...(keep(card.delegates)?.length && { delegates: keep(card.delegates) }),
     ...(keep(card.readers)?.length && { readers: keep(card.readers) }),
     ...(keep(card.runners)?.length && { runners: keep(card.runners) }),
@@ -421,6 +430,8 @@ export async function accept(gitDir, { say = () => {} } = {}) {
     if (!(await boxOf(state, me.address))) writes.push(...publishBox(me.address, me.privateKey));
   }
   writes.push(...records.repo(me.address, toName, next));
+  // Old words of carried-over delegates under the new address would outrank the copied ones.
+  if ((await records.words(sdk, state, me.address, toName, next)).size) throw new Error(`a delegate has old pushes under ${me.address}/${toName}: offer it under another name`);
   for (const [ref, word] of await records.words(sdk, state, owner, name, card)) if (word.commit) writes.push(...records.ref(me.address, toName, ref, word.commit));
   await repo.write(writes, { say, what: `Take ${name} from ${owner}` });
   execFileSync("git", ["--git-dir", gitDir, "remote", "set-url", "origin", `trellis::${me.address}/${toName}`]);
