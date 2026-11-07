@@ -24,6 +24,7 @@ import * as sdk from "../vendor/lattice-sdk.js";
 import { git, objectReader, objectsBetween, requireSha256, store } from "./git.mjs";
 import { readObject } from "./objects.mjs";
 import { addressOf } from "./names.mjs";
+import { boxOf, isPrivate, publishBox, repoSealer } from "./private.mjs";
 import * as records from "./records.mjs";
 import { keep, storageChain } from "./sponsor.mjs";
 import { anyHost, heldFirst, tip, view, volumeLoader } from "./state.mjs";
@@ -175,7 +176,22 @@ export async function main(argv = process.argv.slice(2)) {
   const cache = cidCache(gitDir);
 
   // The remote's refs: ref name → { cid, id }, the id as the commit block claims it.
-  let remote, card;
+  let remote, card, sealing;
+  // A private repo's blocks are sealed (seal.mjs): reading or pushing them
+  // needs a member's key file.
+  const sealerFor = () => {
+    if (!isPrivate(card)) return undefined;
+    if (sealing) return sealing;
+    const keyFile = setting(gitDir, "key", "TRELLIS_KEY");
+    if (!keyFile || keyFile === "selfhold") throw new Error(`${owner}/${name} is private: reading it needs a member's key file in trellis.key`);
+    const privateKey = sdk.hexToBytes(JSON.parse(readFileSync(keyFile, "utf8")).privateKey);
+    sealing = repoSealer(owner, name, card, sdk.accountFromPrivateKey(privateKey).address, privateKey);
+    return sealing;
+  };
+  const openBlock = async (cid) => {
+    const bytes = await chain.block(cid);
+    return sealerFor() ? sealerFor().open(sdk, cid, bytes) : { cid, bytes };
+  };
   const remoteRefs = async () => {
     if (remote) return remote;
     remote = new Map();
@@ -186,7 +202,8 @@ export async function main(argv = process.argv.slice(2)) {
         remote.set(ref, { seq: word.seq });
         continue;
       }
-      const object = readObject(sdk, word.commit, await chain.block(word.commit));
+      const block = await openBlock(word.commit);
+      const object = readObject(sdk, block.cid, block.bytes);
       if (object?.type === "commit" || object?.type === "tag") remote.set(ref, { cid: word.commit, id: object.block.id, seq: word.seq });
     }
     return remote;
@@ -235,7 +252,7 @@ export async function main(argv = process.argv.slice(2)) {
     const roots = ids.map((id) => byId.get(id)).filter(Boolean);
     const held = cache.byCID();
     say(`fetching ${owner}/${name}`);
-    const objects = await fetchObjects(sdk, chain.block, roots, held);
+    const objects = await fetchObjects(sdk, chain.block, roots, held, { sealer: sealerFor() });
     store(gitDir, objects);
     for (const { id, cid } of objects) cache.byId.set(id, cid);
     cache.save();
@@ -295,7 +312,7 @@ export async function main(argv = process.argv.slice(2)) {
     const objects = objectReader(gitDir);
     let volumes;
     try {
-      volumes = await encode(sdk, objects.read, objectsBetween(gitDir, moving.map((u) => u.id), have), known);
+      volumes = await encode(sdk, objects.read, objectsBetween(gitDir, moving.map((u) => u.id), have), known, { sealer: sealerFor() });
     } finally {
       objects.close();
     }
@@ -323,6 +340,8 @@ export async function main(argv = process.argv.slice(2)) {
     const moved = updates.filter(({ dst, id }) => (refs.get(dst)?.cid ?? undefined) !== (id && known.get(id)));
     const writes = [
       ...(card ? [] : records.repo(owner, name, {})),
+      // A key-file account publishes its box key once, so it can be made a member of private repos.
+      ...(me.privateKey && !(await boxOf(state, me.address)) ? publishBox(me.address, me.privateKey) : []),
       ...moved.flatMap(({ dst, id }) => records.ref(owner, name, dst, id && known.get(id), { as: me.address, seq: (refs.get(dst)?.seq ?? 0) + 1 })),
     ];
     const actions = await changes(state, writes);

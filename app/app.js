@@ -382,6 +382,11 @@ async function repoPage(route, show) {
   const { card, refs } = await repoOf(route.owner, route.name);
   if (!card && refs.size === 0) return `<h1>Not found</h1><p class="empty">${esc(shortAccount(route.owner))} has no repository called ${esc(route.name)} on ${esc(settings.chain)}.</p>`;
   const head = (tab, ref) => repoHead(route, card, tab, ref);
+  // A private repo's blocks are sealed for its members' key files (client/seal.mjs); the page can't open them.
+  if (Array.isArray(card?.private?.keys)) {
+    return `${head("code")}<div class="panel"><h2>A private repository</h2><p>Its files and history are sealed so only its members read them, with their key files: clone it with git.</p>
+      <pre class="cmd">git clone trellis::${esc(route.owner)}/${esc(route.name)}</pre><p class="hint">Its name, branch names and members are public. Issues and pull requests are off, since they would be public too.</p></div>`;
+  }
   const talk = { issues: "issues", "issues-new": "issues", pulls: "pulls", "pulls-new": "pulls", issue: "issues", pull: "pulls" }[route.view];
   if (talk) return head(talk) + (await talkPage(route, card, refs));
   if (refs.size === 0) return `${head("code")}<p class="empty">Nothing has been pushed yet.</p>${cloneBox(route)}`;

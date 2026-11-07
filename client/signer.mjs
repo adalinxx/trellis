@@ -33,6 +33,7 @@ export function signer(sdk, gitDir, { say = () => {}, urls = [] } = {}) {
   const privateKey = sdk.hexToBytes(JSON.parse(readFileSync(key, "utf8")).privateKey);
   return {
     address: sdk.accountFromPrivateKey(privateKey).address,
+    privateKey,
     async write(chain, chainPath, actions) {
       if (!sponsor) throw new Error("no sponsor: set trellis.sponsor (git config) or TRELLIS_SPONSOR");
       const draft = transaction({ owner: this.address, actions, nonce: await chain.nonce(this.address), chainPath });

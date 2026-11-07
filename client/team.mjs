@@ -82,11 +82,22 @@ export async function mirror(gitDir, sponsor, { say = () => {} } = {}) {
   const { readObject } = await import("./objects.mjs");
   requireSha256(gitDir);
   const { sdk, owner, name, chain, chainPath } = await origin(gitDir);
-  const refs = await records.refs(sdk, await chain.state(), owner, name);
+  const state = await chain.state();
+  const card = await records.card(state, owner, name);
+  const refs = await records.refs(sdk, state, owner, name, card ?? null);
   if (!refs.size) throw new Error(`${owner}/${name} has no branches or tags`);
+  const { isPrivate, repoSealer } = await import("./private.mjs");
+  let sealer;
+  if (isPrivate(card)) {
+    const me = (await origin(gitDir)).signer();
+    if (!me.privateKey) throw new Error(`${owner}/${name} is private: mirroring it needs a member's key file`);
+    sealer = repoSealer(owner, name, card, me.address, me.privateKey);
+  }
   const ids = [];
   for (const [ref, cid] of refs) {
-    const id = readObject(sdk, cid, await chain.block(cid))?.block?.id;
+    const bytes = await chain.block(cid);
+    const block = sealer ? sealer.open(sdk, cid, bytes) : { cid, bytes };
+    const id = readObject(sdk, block.cid, block.bytes)?.block?.id;
     if (!id) throw new Error(`${ref}'s block isn't a commit or tag`);
     ids.push([ref, id, cid]);
   }
@@ -104,7 +115,7 @@ export async function mirror(gitDir, sponsor, { say = () => {} } = {}) {
   const objects = objectReader(gitDir);
   let volumes;
   try {
-    volumes = await encode(sdk, objects.read, objectsBetween(gitDir, ids.map(([, id]) => id), []), known);
+    volumes = await encode(sdk, objects.read, objectsBetween(gitDir, ids.map(([, id]) => id), []), known, { sealer });
   } finally {
     objects.close();
   }
@@ -128,8 +139,57 @@ export async function maintainers(gitDir, verb, who, { say = () => {} } = {}) {
   if (repo.signer().address !== owner) throw new Error(`only ${owner}, the owner, changes who maintains ${owner}/${name}`);
   if (who === owner) throw new Error("the owner always maintains the repo");
   const delegates = verb === "add" ? [...new Set([...(card.delegates ?? []), who])] : (card.delegates ?? []).filter((d) => d !== who);
-  await repo.write(delegation(owner, name, card, await records.words(sdk, state, owner, name, card), delegates), { say });
+  const next = await dealt(repo, state, card, { ...card, delegates });
+  await repo.write(delegation(owner, name, next, await records.words(sdk, state, owner, name, card), delegates), { say });
   return records.maintainers(owner, { delegates });
+}
+
+/** `after`, with a private repo's keys dealt again for its members (private.mjs). */
+async function dealt(repo, state, before, after) {
+  const { isPrivate, redeal, boxOf } = await import("./private.mjs");
+  if (!isPrivate(before)) return after;
+  const me = repo.signer();
+  if (!me.privateKey) throw new Error("dealing a private repo's keys needs a key file in trellis.key (Selfhold can't open them)");
+  return redeal(repo.owner, repo.name, before, after, me.address, me.privateKey, (a) => boxOf(state, a));
+}
+
+/** `trellis readers [add|remove <address or @handle>]`: who reads a private repo without pushing. */
+export async function readers(gitDir, verb, who, { say = () => {} } = {}) {
+  const { isPrivate, members } = await import("./private.mjs");
+  const repo = await origin(gitDir);
+  const { owner, name, chain } = repo;
+  const state = await chain.state();
+  const card = await records.card(state, owner, name);
+  if (!isPrivate(card)) throw new Error(`${owner}/${name} isn't private: anyone reads it`);
+  const now = (card.readers ?? []).filter((r) => typeof r === "string");
+  if (!verb) return now;
+  if (verb !== "add" && verb !== "remove") throw new Error(`trellis readers add|remove <address>, not ${verb}`);
+  if (!who) throw new Error("name the account by its address or @handle");
+  who = await repo.addressOf(who);
+  if (repo.signer().address !== owner) throw new Error(`only ${owner}, the owner, changes who reads ${owner}/${name}`);
+  const list = verb === "add" ? [...new Set([...now, who])] : now.filter((r) => r !== who);
+  const next = await dealt(repo, state, card, { ...card, readers: list });
+  await repo.write(records.repo(owner, name, next), { say, what: `Readers of ${name}` });
+  return members(owner, next).filter((m) => list.includes(m));
+}
+
+/**
+ * `trellis private`, before the first push: makes `origin` a private repo,
+ * whose blocks are sealed so only its members read them (seal.mjs). Its name,
+ * branch names and members are public; issues and pull requests are off.
+ */
+export async function makePrivate(gitDir, { say = () => {} } = {}) {
+  const { newPrivate, publishBox } = await import("./private.mjs");
+  const { boxKeys } = await import("./seal.mjs");
+  const repo = await origin(gitDir);
+  const { sdk, owner, name, chain } = repo;
+  const me = repo.signer();
+  if (me.address !== owner) throw new Error(`only ${owner} makes ${owner}/${name}`);
+  if (!me.privateKey) throw new Error("a private repo needs a key file in trellis.key (Selfhold can't open its keys)");
+  const state = await chain.state();
+  const card = await records.card(state, owner, name);
+  if ((await records.refs(sdk, state, owner, name, card ?? null)).size || card) throw new Error(`${owner}/${name} already exists in the open: make a new repo private, before its first push`);
+  await repo.write([...records.repo(owner, name, { private: newPrivate(owner, name, boxKeys(me.privateKey).publicKey) }), ...publishBox(owner, me.privateKey)], { say, what: `Make ${name} private` });
 }
 
 /**
@@ -165,4 +225,14 @@ export async function release(gitDir, tag, { title, notes = "", files = [], say 
   // A maintainer's release is under their own key, for the repo's name.
   await repo.write(collab.release(me, name, tag, record), { say, what: `Release ${tag} of ${name}` });
   return { tag, files: kept };
+}
+
+/** `trellis box`: publishes this key file's box key, so owners can make it a member of private repos. */
+export async function publishOwnBox(gitDir, { say = () => {} } = {}) {
+  const { publishBox } = await import("./private.mjs");
+  const repo = await origin(gitDir);
+  const me = repo.signer();
+  if (!me.privateKey) throw new Error("a box key comes from a key file in trellis.key");
+  await repo.write(publishBox(me.address, me.privateKey), { say, what: "Publish your box key" });
+  return me.address;
 }

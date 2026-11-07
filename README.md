@@ -139,6 +139,25 @@ branch that land in the same block can't both stand: the one that loses says
 so (`another maintainer pushed to it at the same time`), and fetching and
 pushing again puts it on top.
 
+### Private repos
+
+```sh
+trellis private                        # in a new repo's clone, before its first push
+trellis readers add <address>          # members who read but don't push
+trellis maintainers add <address>      # members who push too
+```
+
+A private repo's every block is sealed with the repo's key (AES-256-GCM), so
+the nodes and sponsors that keep and serve it can't read its files, messages
+or history. The key reaches each member sealed to their box key, an X25519
+key derived from their account key and published on their first push (or
+with `trellis box`). Removing a member makes a new key for every push from
+then on; members keep every key, so all history stays readable to them.
+Members read and push with key files, as git does; the page can't open a
+private repo. Public on the chain: its name, its branch and tag names, who
+its members are, and its files' sizes. Issues and pull requests are off.
+Sealing is deterministic, so pushes share blocks and `trellis mirror` works.
+
 ### Keeping a repo
 
 A repo's blocks are kept by the sponsors that push or mirror it, each on its

@@ -264,6 +264,40 @@ try {
   assert.equal(Buffer.from(assetBytes).toString(), readFileSync(asset, "utf8"));
   console.log("trellis release: notes and a file, kept by the sponsor");
 
+  // A private repo: sealed blocks; its owner and a reader clone it, nobody
+  // else can; a dropped reader can't read what is pushed after.
+  const vault = newRepo(join(work, "vault"));
+  writeFileSync(join(vault, "plans.txt"), "secret plans\n");
+  run(vault, "add", "-A");
+  run(vault, "commit", "-q", "-m", "the plans");
+  run(vault, "remote", "add", "origin", `trellis::${carol.address}/vault`);
+  trellis(helperEnv(authorNode), vault, "private");
+  gitWith(helperEnv(authorNode), vault, "push", "-q", "origin", "main");
+  const vaultHead = await records.refs(sdk, await state(), carol.address, "vault");
+  const sealedBytes = Buffer.from(await blockReader(sdk, load).object(vaultHead.get("refs/heads/main")).then(() => "", (e) => e.message));
+  assert.match(sealedBytes.toString(), /not a git object block/, "a node sees no git object, only a sealed block");
+  await until("the reader's node has the vault", async () => (await records.refs(sdk, await state(readerNode), carol.address, "vault")).has("refs/heads/main"));
+  const vaultClone = join(work, "vault-clone");
+  gitWith(helperEnv(readerNode), work, "clone", "-q", `trellis::${carol.address}/vault`, vaultClone);
+  assert.equal(readFileSync(join(vaultClone, "plans.txt"), "utf8"), "secret plans\n");
+  assert.match(gitFails(helperEnv(readerNode, aliceKey), work, "clone", "-q", `trellis::${carol.address}/vault`, join(work, "vault-alice")), /isn't one of its members/);
+  trellis(helperEnv(authorNode), vault, "readers", "add", alice.address);
+  await until("the reader's node has Alice as a reader", async () => (await records.card(await state(readerNode), carol.address, "vault"))?.readers?.includes(alice.address));
+  const aliceVault = join(work, "vault-alice2");
+  gitWith(helperEnv(readerNode, aliceKey), work, "clone", "-q", `trellis::${carol.address}/vault`, aliceVault);
+  assert.equal(readFileSync(join(aliceVault, "plans.txt"), "utf8"), "secret plans\n");
+  run(aliceVault, "commit", "-q", "--allow-empty", "-m", "by a reader");
+  assert.match(gitFails(helperEnv(authorNode, aliceKey), aliceVault, "push", "origin", "main"), /not one of .* maintainers/);
+  trellis(helperEnv(authorNode), vault, "readers", "remove", alice.address);
+  writeFileSync(join(vault, "plans.txt"), "newer secret plans\n");
+  run(vault, "commit", "-q", "-am", "newer plans");
+  gitWith(helperEnv(authorNode), vault, "push", "-q", "origin", "main");
+  await until("the reader's node has the newer plans", async () => (await records.refs(sdk, await state(readerNode), carol.address, "vault")).get("refs/heads/main") !== vaultHead.get("refs/heads/main"));
+  assert.match(gitFails(helperEnv(readerNode, aliceKey), aliceVault, "fetch", "origin"), /one of its members/);
+  gitWith(helperEnv(readerNode), vaultClone, "pull", "-q", "--ff-only");
+  assert.equal(readFileSync(join(vaultClone, "plans.txt"), "utf8"), "newer secret plans\n");
+  console.log("private: sealed blocks; members clone, others can't; a dropped reader can't fetch what came after");
+
   // trellis import: a SHA-1 repository on master, signed, then pushed whole.
   const old = join(work, "old-project");
   mkdirSync(old);
