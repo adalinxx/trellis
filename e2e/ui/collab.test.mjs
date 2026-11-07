@@ -141,23 +141,15 @@ before(async () => {
       return open(to.href, "selfhold-test", features);
     };
   });
-  // A page on another site (trellis's signing page) opens a new Selfhold
-  // window rather than reusing it: drive the newest, with the passkeys the
-  // last one's authenticator holds.
-  let authenticator;
   context.on("page", async (popup) => {
     if (!(await popup.opener().catch(() => null))) return;
+    if (walletWindow) return console.log(`another popup, not the Selfhold window the test drives: ${popup.url()}`);
+    walletWindow = popup;
     const cdp = await context.newCDPSession(popup);
     await cdp.send("WebAuthn.enable");
-    const { authenticatorId } = await cdp.send("WebAuthn.addVirtualAuthenticator", {
+    await cdp.send("WebAuthn.addVirtualAuthenticator", {
       options: { protocol: "ctap2", transport: "internal", hasResidentKey: true, hasUserVerification: true, isUserVerified: true, hasPrf: true, automaticPresenceSimulation: true },
     });
-    if (authenticator) {
-      const { credentials } = await authenticator.cdp.send("WebAuthn.getCredentials", { authenticatorId: authenticator.authenticatorId });
-      for (const credential of credentials) await cdp.send("WebAuthn.addCredential", { authenticatorId, credential });
-    }
-    authenticator = { cdp, authenticatorId };
-    walletWindow = popup;
   });
   page = await context.newPage();
   page.on("pageerror", (error) => errors.push(error.message));
@@ -353,6 +345,9 @@ test("releases: Carol's shown on her tags; Bob writes one on his fork", async ()
 test("Bob pushes from the command line with Selfhold: one account in git and the page", async () => {
   const home = mkdtempSync(join(tmpdir(), "trellis-home-"));
   const env = { ...process.env, HOME: home, PATH: `${here("../bin")}:${process.env.PATH}`, TRELLIS_NODE: authorNode, TRELLIS_SPONSOR: sponsorURL, TRELLIS_CHAIN: CHAIN.join("/"), TRELLIS_WALLET: walletPage, TRELLIS_NO_BROWSER: "1", TRELLIS_SIGN_PORT: "29271", GIT_TERMINAL_PROMPT: "0" };
+  // trellis's signing page, opened as localhost (the page's own site), so
+  // Selfhold's one window, and its passkey, serve it too.
+  const sameSite = (url) => url.replace("://127.0.0.1:", "://localhost:");
   // Each step named, and given at most `seconds`, so a hang says where.
   const step = async (what, promise, seconds = 120, more = () => "") => {
     console.log(`cli: ${what}`);
@@ -379,7 +374,7 @@ test("Bob pushes from the command line with Selfhold: one account in git and the
   };
   const login = cli(here("../bin/trellis"), ["login"]);
   try {
-    await page.goto(await step("trellis login prints its URL", login.url, 60, login.said));
+    await page.goto(sameSite(await step("trellis login prints its URL", login.url, 60, login.said)));
     const opened = await step("Selfhold's window opens for the login", inSelfhold(page.getByRole("button", { name: "Approve in Selfhold" })), 60);
     await opened.getByRole("button", { name: "Connect", exact: true }).click();
     await page.bringToFront();
@@ -393,7 +388,7 @@ test("Bob pushes from the command line with Selfhold: one account in git and the
   execFileSync("git", ["-C", clone, "-c", "user.name=Bob", "-c", "user.email=bob@example.com", "commit", "-q", "--allow-empty", "-m", "from Bob's terminal"], { env });
   const push = cli("git", ["-C", clone, "push", "-q", "origin", "main"]);
   try {
-    await page.goto(await step("git push prints its URL", push.url, 120, push.said));
+    await page.goto(sameSite(await step("git push prints its URL", push.url, 120, push.said)));
     await step("Selfhold approves the push", approve(page.getByRole("button", { name: "Approve in Selfhold" })), 60);
     await step("git push ends", push.done, 400, push.said);
   } finally {
