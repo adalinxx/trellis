@@ -10,6 +10,9 @@
 // GitHub mirror, say). See client/export.mjs.
 // trellis private: make a new repo private, before its first push.
 // trellis readers [add|remove <address>]: who reads a private repo.
+// trellis check <name> pending|pass|fail [...]: a CI result on a commit.
+// trellis runners [add|remove <address>]: whose checks the repo counts.
+// trellis ci [--once]: run .trellis/ci on each new branch tip, post results.
 // trellis login: sign with Selfhold, the account the page uses, from now on.
 // See client/signer.mjs.
 // trellis mirror <sponsor>: every block of the repo kept by that sponsor too.
@@ -18,11 +21,11 @@ import { execFileSync } from "node:child_process";
 import { basename, resolve } from "node:path";
 import { importRepository } from "../client/import.mjs";
 import { importIssues } from "../client/github.mjs";
-import { makePrivate, maintainers, mirror, publishOwnBox, readers, release } from "../client/team.mjs";
+import { makePrivate, maintainers, mirror, postCheck, publishOwnBox, readers, release, runCI, runnersOf } from "../client/team.mjs";
 import { login } from "../client/signer.mjs";
 import { exportTo } from "../client/export.mjs";
 
-const usage = "usage: trellis import <github url or path> [<directory>]\n       trellis import-issues <github url>   (in a repository whose origin is trellis::)\n       trellis maintainers [add|remove <address>]   (likewise)\n       trellis mirror <sponsor url>   (likewise; in an up-to-date clone)\n       trellis login   (sign with Selfhold instead of a key file)\n       trellis release <tag> [--title <title>] [--notes <text>] [<file>...]   (in a repository whose origin is trellis::)\n       trellis export <git url>   (in a Trellis clone: its branches and tags as SHA-1, pushed there)\n       trellis private   (before a new repo's first push: only its members read it)\n       trellis readers [add|remove <address>]   (who reads a private repo)\n       trellis box   (publish your key file's box key, to be made a member of private repos)";
+const usage = "usage: trellis import <github url or path> [<directory>]\n       trellis import-issues <github url>   (in a repository whose origin is trellis::)\n       trellis maintainers [add|remove <address>]   (likewise)\n       trellis mirror <sponsor url>   (likewise; in an up-to-date clone)\n       trellis login   (sign with Selfhold instead of a key file)\n       trellis release <tag> [--title <title>] [--notes <text>] [<file>...]   (in a repository whose origin is trellis::)\n       trellis export <git url>   (in a Trellis clone: its branches and tags as SHA-1, pushed there)\n       trellis private   (before a new repo's first push: only its members read it)\n       trellis readers [add|remove <address>]   (who reads a private repo)\n       trellis box   (publish your key file's box key, to be made a member of private repos)\n       trellis check <name> pending|pass|fail [--summary <s>] [--url <u>] [--commit <rev>]\n       trellis runners [add|remove <address>]\n       trellis ci [--once] [--every <seconds>] [--name <check>]   (run .trellis/ci on each new branch tip)";
 const [command, source, directory] = process.argv.slice(2);
 const configured = (key) => {
   try {
@@ -85,6 +88,23 @@ if (command === "import" && source) {
 } else if (command === "box") {
   const gitDir = resolve(execFileSync("git", ["rev-parse", "--git-dir"], { encoding: "utf8" }).trim());
   publishOwnBox(gitDir, { say }).then((a) => process.stdout.write(`${a}'s box key is published: owners can make it a member of private repos\n`), fail);
+} else if (command === "check" && source && directory) {
+  const rest = process.argv.slice(5);
+  const options = {};
+  for (let i = 0; i < rest.length; i++) options[rest[i].replace(/^--/, "")] = rest[++i];
+  const gitDir = resolve(execFileSync("git", ["rev-parse", "--git-dir"], { encoding: "utf8" }).trim());
+  postCheck(gitDir, source, directory, { ...options, say }).then((id) => process.stdout.write(`${source}: ${directory} on ${id.slice(0, 10)}\n`), fail);
+} else if (command === "runners") {
+  const gitDir = resolve(execFileSync("git", ["rev-parse", "--git-dir"], { encoding: "utf8" }).trim());
+  runnersOf(gitDir, source, directory, { say }).then((list) => process.stdout.write(list.map((a) => `${a}\n`).join("")), fail);
+} else if (command === "ci") {
+  const rest = process.argv.slice(3);
+  const options = { once: rest.includes("--once") };
+  const at = (flag) => (rest.includes(flag) ? rest[rest.indexOf(flag) + 1] : undefined);
+  if (at("--every")) options.every = Number(at("--every"));
+  if (at("--name")) options.check = at("--name");
+  const gitDir = resolve(execFileSync("git", ["rev-parse", "--git-dir"], { encoding: "utf8" }).trim());
+  runCI(gitDir, { ...options, say }).then(() => {}, fail);
 } else if (command === "login") {
   const urls = (process.env.TRELLIS_NODE ?? configured("trellis.node") ?? "").split(",").map((u) => u.trim()).filter(Boolean);
   login({ say, urls, sponsor: process.env.TRELLIS_SPONSOR ?? configured("trellis.sponsor")?.split(",")[0] }).then((address) => process.stdout.write(`signed in as ${address}: git push and trellis sign with Selfhold now (trellis.key = selfhold)\n`), fail);

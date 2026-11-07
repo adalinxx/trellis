@@ -139,6 +139,25 @@ branch that land in the same block can't both stand: the one that loses says
 so (`another maintainer pushed to it at the same time`), and fetching and
 pushing again puts it on top.
 
+### CI
+
+A check is a CI result on a commit, signed by whoever ran it, as GitHub's
+commit statuses are. The page shows each commit's checks, and a pull
+request's on its head, counting only the repo's maintainers' and the runners
+its owner names:
+
+```sh
+trellis runners add <address>              # the owner: whose checks count
+trellis ci                                 # a runner: .trellis/ci on each new branch tip, results posted
+trellis check test pass --url <link>       # from any CI (GitHub Actions on an exported mirror, say)
+```
+
+`trellis ci` fetches `origin` every minute (`--once` for one pass), runs the
+commit's executable `.trellis/ci` in a scratch worktree with `CI=true`,
+`TRELLIS_COMMIT` and `TRELLIS_BRANCH` set, and posts pending, then pass or
+fail with the output's last lines. It runs the repo's own code: run it only
+for repos you trust, as with any CI runner.
+
 ### Private repos
 
 ```sh

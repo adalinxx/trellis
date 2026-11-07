@@ -236,3 +236,80 @@ export async function publishOwnBox(gitDir, { say = () => {} } = {}) {
   await repo.write(publishBox(me.address, me.privateKey), { say, what: "Publish your box key" });
   return me.address;
 }
+
+/** `trellis check <name> pending|pass|fail [--summary <s>] [--url <u>] [--commit <rev>]`: a check result, from any CI. */
+export async function postCheck(gitDir, name, state, { summary, url, commit = "HEAD", say = () => {} } = {}) {
+  const { execFileSync } = await import("node:child_process");
+  const { check } = await import("./checks.mjs");
+  const repo = await origin(gitDir);
+  const id = execFileSync("git", ["--git-dir", gitDir, "rev-parse", `${commit}^{commit}`], { encoding: "utf8" }).trim();
+  const me = repo.signer(say).address;
+  await repo.write(check(me, repo.owner, repo.name, id, name, { state, summary, url, time: Math.floor(Date.now() / 1000) }), { say, what: `Check ${name}: ${state}` });
+  return id;
+}
+
+/** `trellis runners [add|remove <address or @handle>]`: whose checks the repo counts, besides its maintainers. */
+export async function runnersOf(gitDir, verb, who, { say = () => {} } = {}) {
+  const repo = await origin(gitDir);
+  const { owner, name, chain } = repo;
+  const card = await records.card(await chain.state(), owner, name);
+  if (!card) throw new Error(`${owner}/${name} doesn't exist yet: push to it first`);
+  const now = Array.isArray(card.runners) ? card.runners : [];
+  if (!verb) return now;
+  if (verb !== "add" && verb !== "remove") throw new Error(`trellis runners add|remove <address>, not ${verb}`);
+  if (!who) throw new Error("name the account by its address or @handle");
+  who = await repo.addressOf(who);
+  if (repo.signer().address !== owner) throw new Error(`only ${owner}, the owner, changes ${owner}/${name}'s runners`);
+  const list = verb === "add" ? [...new Set([...now, who])] : now.filter((r) => r !== who);
+  await repo.write(records.repo(owner, name, { ...card, runners: list }), { say, what: `Runners of ${name}` });
+  return list;
+}
+
+/**
+ * `trellis ci [--once] [--every <seconds>] [--name <check>]`: a runner. For
+ * each branch of `origin` whose tip has no result of this check from this
+ * runner, runs `.trellis/ci` from that commit in a scratch worktree, and
+ * posts pending, then pass or fail with the output's last lines. It runs the
+ * repo's own code, so run it for repos you trust, as any CI runner.
+ */
+export async function runCI(gitDir, { once = false, every = 60, check: checkName = "ci", say = () => {} } = {}) {
+  const { execFileSync, spawnSync } = await import("node:child_process");
+  const { existsSync, mkdtempSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { check, checks } = await import("./checks.mjs");
+  const repo = await origin(gitDir);
+  const me = repo.signer(say).address;
+  const g = (...args) => execFileSync("git", ["--git-dir", gitDir, ...args], { encoding: "utf8" }).trim();
+  for (;;) {
+    g("fetch", "--quiet", "--prune", "origin");
+    const card = await records.card(await repo.chain.state(), repo.owner, repo.name);
+    const tips = g("for-each-ref", "--format=%(objectname) %(refname:short)", "refs/remotes/origin").split("\n").filter((l) => l && !l.endsWith("/HEAD")).map((l) => l.split(" "));
+    for (const [id, branch] of [...new Map(tips.map(([id, b]) => [id, b]))].map(([id, b]) => [id, b])) {
+      const done = (await checks(await repo.chain.state(), repo.owner, repo.name, { ...card, runners: [me] }, id)).some((c) => c.check === checkName && c.by === me);
+      if (done) continue;
+      const post = (state, summary) => repo.write(check(me, repo.owner, repo.name, id, checkName, { state, summary, time: Math.floor(Date.now() / 1000) }), { say, what: `CI ${branch}` });
+      const dir = mkdtempSync(join(tmpdir(), "trellis-ci-"));
+      try {
+        g("worktree", "add", "--quiet", "--detach", dir, id);
+        if (!existsSync(join(dir, ".trellis/ci"))) {
+          say(`${branch} ${id.slice(0, 10)}: no .trellis/ci, nothing to run`);
+          await post("pass", "No .trellis/ci in this commit: nothing to run.");
+          continue;
+        }
+        say(`${branch} ${id.slice(0, 10)}: running .trellis/ci`);
+        await post("pending", `Running on ${me}.`);
+        const ran = spawnSync(join(dir, ".trellis/ci"), [], { cwd: dir, encoding: "utf8", maxBuffer: 64 << 20, timeout: 3600_000, env: { ...process.env, TRELLIS_KEY: "", CI: "true", TRELLIS_COMMIT: id, TRELLIS_BRANCH: branch } });
+        const output = `${ran.stdout ?? ""}${ran.stderr ?? ""}`.trim().split("\n").slice(-20).join("\n");
+        const ok = ran.status === 0;
+        say(`${branch} ${id.slice(0, 10)}: ${ok ? "pass" : "fail"}`);
+        await post(ok ? "pass" : "fail", `${ok ? "Passed" : ran.error ? `Didn't run: ${ran.error.message}` : `Exited ${ran.status ?? ran.signal}`}.\n\n${output}`.slice(0, 2000));
+      } finally {
+        spawnSync("git", ["--git-dir", gitDir, "worktree", "remove", "--force", dir]);
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+    if (once) return;
+    await new Promise((resolve) => setTimeout(resolve, every * 1000));
+  }
+}

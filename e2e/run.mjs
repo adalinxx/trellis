@@ -12,13 +12,14 @@
 //   LATTICE_SPONSOR=<lattice-sponsor>/.build/debug/lattice-sponsor node e2e/run.mjs
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as sdk from "../vendor/lattice-sdk.js";
 import { git, objectReader, objectsBetween, store } from "../client/git.mjs";
 import * as records from "../client/records.mjs";
 import * as collab from "../client/collab.mjs";
+import { checks as checksOn } from "../client/checks.mjs";
 import { reader as blockReader } from "../client/browse.mjs";
 import { keep, sponsored } from "../client/sponsor.mjs";
 import { encode, fetchObjects } from "../client/transfer.mjs";
@@ -263,6 +264,22 @@ try {
   const assetBytes = await blockReader(sdk, load).blob(released.files[0].cid);
   assert.equal(Buffer.from(assetBytes).toString(), readFileSync(asset, "utf8"));
   console.log("trellis release: notes and a file, kept by the sponsor");
+
+  // CI: a runner runs .trellis/ci on the branch tip and posts its result;
+  // a check from someone the card doesn't name doesn't count.
+  mkdirSync(join(tools, ".trellis"), { recursive: true });
+  writeFileSync(join(tools, ".trellis/ci"), "#!/bin/sh\necho checking $TRELLIS_BRANCH\ntest -f tool.sh\n");
+  chmodSync(join(tools, ".trellis/ci"), 0o755);
+  run(tools, "add", "-A");
+  run(tools, "commit", "-q", "-m", "ci");
+  gitWith(helperEnv(authorNode), tools, "push", "-q", "origin", "main");
+  const ciTip = run(tools, "rev-parse", "main");
+  trellis(helperEnv(authorNode), tools, "ci", "--once");
+  trellis(helperEnv(authorNode, aliceKey), tools, "check", "lint", "fail", "--summary", "not a runner");
+  const tipChecks = await checksOn(await state(), carol.address, "tools", await records.card(await state(), carol.address, "tools"), ciTip);
+  assert.deepEqual(tipChecks.map((c) => [c.check, c.state, c.by]), [["ci", "pass", carol.address]]);
+  assert.match(tipChecks[0].summary, /checking origin\/main/);
+  console.log("ci: .trellis/ci run on the tip and its result posted; a stranger's check not counted");
 
   // A private repo: sealed blocks; its owner and a reader clone it, nobody
   // else can; a dropped reader can't read what is pushed after.

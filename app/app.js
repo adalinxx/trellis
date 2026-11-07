@@ -13,6 +13,7 @@ import { keep, storageChain } from "../client/sponsor.mjs";
 import { tip, view, volumeLoader } from "../client/state.mjs";
 import { hunks, isText, lineDiff, lines, reader } from "../client/browse.mjs";
 import * as collab from "../client/collab.mjs";
+import { checks as checksOn, overall } from "../client/checks.mjs";
 import { changes } from "../client/write.mjs";
 import { selfhold } from "./vendor/selfhold.mjs";
 import { Marked } from "./vendor/marked.esm.js";
@@ -490,6 +491,11 @@ const code = (rows) => `<table class="code"><tbody>${rows.map((line, i) => `<tr>
 
 async function commitsPage(route, refs, at) {
   const { commits, more } = await chain.read.history([at.commit], route.limit);
+  // Each commit's checks (CI results, client/checks.mjs), as one word.
+  const state = await chain.state();
+  const card = await records.card(state, route.owner, route.name);
+  const found = await Promise.all(commits.map((c) => checksOn(state, route.owner, route.name, card, c.id).catch(() => [])));
+  commits.forEach((c, i) => (c.checks = found[i]));
   const byDay = new Map();
   for (const c of commits) {
     const day = new Date(c.committer.time * 1000).toISOString().slice(0, 10);
@@ -505,7 +511,21 @@ function commitRow(route, c) {
   const { subject: first } = subject(c.message);
   return `<li class="commit-row"><a class="subject" href="${href({ view: "commit", owner: route.owner, name: route.name, cid: c.cid })}">${esc(first)}</a>
     <span class="muted">${esc(c.author.name)} committed ${esc(ago(c.committer.time))}${c.signed ? ' · <span class="badge" title="It carries a signature. The page does not check it: git verify-commit does, on a clone.">signed</span>' : ""}</span>
-    <span class="mono id">${esc(c.id.slice(0, 10))}</span></li>`;
+    ${checkBadge(c.checks)}<span class="mono id">${esc(c.id.slice(0, 10))}</span></li>`;
+}
+
+/** A commit's checks as a badge, each named in its title; nothing for none. */
+function checkBadge(list = []) {
+  const word = overall(list);
+  if (!word) return "";
+  const title = list.map((c) => `${c.check}: ${c.state}${c.summary ? ` — ${c.summary.split("\n")[0]}` : ""}`).join("\n");
+  return `<span class="check ${word}" title="${esc(title)}">${{ pass: "✓ checks", fail: "✗ checks", pending: "• checks" }[word]}</span>`;
+}
+
+/** A commit's checks, listed, with their summaries and links. */
+function checkList(list) {
+  if (!list.length) return "";
+  return `<div class="checks panel"><h3>Checks ${checkBadge(list)}</h3><ul>${list.map((c) => `<li><span class="check ${c.state}">${esc(c.state)}</span> <strong>${esc(c.check)}</strong> <span class="muted">by ${esc(shortAccount(c.by))} · ${esc(ago(c.time))}</span>${c.url ? ` <a href="${esc(c.url)}" rel="noopener noreferrer" target="_blank">details</a>` : ""}${c.summary ? `<details><summary>Output</summary><pre class="plain">${esc(c.summary)}</pre></details>` : ""}</li>`).join("")}</ul></div>`;
 }
 
 async function commitPage(route) {
@@ -719,7 +739,8 @@ async function issuePage(route, state, card, refs) {
   const tabs = pr ? `<nav class="tabs sub" aria-label="Pull request">${[["conversation", "Conversation"], ["commits", `Commits ${compared ? compared.commits.length : ""}`], ["files", "Files changed"]].map(([t, l]) => `<a class="tab" href="${href({ ...self, tab: t })}" ${route.tab === t ? 'aria-current="page"' : ""}>${l}</a>`).join("")}</nav>` : "";
   if (pr && route.tab === "commits") return top + tabs + (compared ? `<ul class="commits">${compared.commits.map((c) => commitRow(route, c)).join("")}</ul>` : `<p class="empty">Its branch is gone.</p>`);
   if (pr && route.tab === "files") return top + tabs + (await pullFiles(route, status, compared, comments));
-  return top + tabs + conversation(route, issue, comments, status, isMaintainer, compared);
+  const headChecks = pr && compared?.commits[0] ? await checksOn(state, route.owner, route.name, card, compared.commits[0].id).catch(() => []) : [];
+  return top + tabs + checkList(headChecks) + conversation(route, issue, comments, status, isMaintainer, compared);
 }
 
 function label(head) {
