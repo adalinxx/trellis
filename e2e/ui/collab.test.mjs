@@ -141,15 +141,23 @@ before(async () => {
       return open(to.href, "selfhold-test", features);
     };
   });
+  // A page on another site (trellis's signing page) opens a new Selfhold
+  // window rather than reusing it: drive the newest, with the passkeys the
+  // last one's authenticator holds.
+  let authenticator;
   context.on("page", async (popup) => {
-    if (walletWindow && (await popup.opener().catch(() => null))) console.log(`another popup, not the Selfhold window the test drives: ${popup.url()}`);
-    if (walletWindow || !(await popup.opener().catch(() => null))) return;
-    walletWindow = popup;
+    if (!(await popup.opener().catch(() => null))) return;
     const cdp = await context.newCDPSession(popup);
     await cdp.send("WebAuthn.enable");
-    await cdp.send("WebAuthn.addVirtualAuthenticator", {
+    const { authenticatorId } = await cdp.send("WebAuthn.addVirtualAuthenticator", {
       options: { protocol: "ctap2", transport: "internal", hasResidentKey: true, hasUserVerification: true, isUserVerified: true, hasPrf: true, automaticPresenceSimulation: true },
     });
+    if (authenticator) {
+      const { credentials } = await authenticator.cdp.send("WebAuthn.getCredentials", { authenticatorId: authenticator.authenticatorId });
+      for (const credential of credentials) await cdp.send("WebAuthn.addCredential", { authenticatorId, credential });
+    }
+    authenticator = { cdp, authenticatorId };
+    walletWindow = popup;
   });
   page = await context.newPage();
   page.on("pageerror", (error) => errors.push(error.message));

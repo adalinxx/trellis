@@ -133,6 +133,7 @@ const seen = () => Number(saved(seenKey()) ?? 0);
 async function countUnread() {
   const notes = await chain.state().then((state) => collab.inbox(state, me, { limit: 50 })).catch((error) => (console.warn("inbox", error), []));
   const n = notes.filter((note) => note.time > seen()).length;
+  console.debug(`inbox: ${notes.length} notes for ${me}, ${n} unread`);
   const badge = $("#unread");
   if (badge) badge.textContent = n ? ` ${n > 49 ? "50+" : n}` : "";
 }
@@ -1051,6 +1052,8 @@ document.addEventListener("submit", (event) => {
 });
 
 addEventListener("hashchange", render);
+// New notes show without a page change.
+setInterval(() => me && document.visibilityState === "visible" && parseRoute(location.hash).view !== "inbox" && countUnread(), 30_000);
 me = await wallet.address().catch(() => null);
 renderWho();
 render();
