@@ -162,3 +162,21 @@ export async function whereNow(state, a, name) {
   }
   return { ...at, moved: at.owner !== a || at.name !== name };
 }
+
+/**
+ * `me`'s fork of `<owner>/<name>`: the same name under `me`, its card naming
+ * the original (`forkOf`), its refs where the original's are. The blocks are
+ * the original's, so nothing is uploaded. `mine` is `me`'s card there, if any:
+ * then only the refs are written.
+ */
+export const fork = (me, owner, name, card, refs, mine) => [
+  ...(mine ? [] : repo(me, name, { forkOf: `${owner}/${name}`, ...(typeof card?.description === "string" && { description: card.description }) })),
+  ...[...refs].flatMap(([refName, cid]) => ref(me, name, refName, cid)),
+];
+
+/** The forks of `<owner>/<name>`: owners of the same name whose card says it's a fork of it. */
+export async function forks(state, owner, name) {
+  const out = [];
+  for (const a of await owners(state, name)) if (a !== owner && (await card(state, a, name))?.forkOf === `${owner}/${name}`) out.push(a);
+  return out;
+}

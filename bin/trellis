@@ -21,11 +21,11 @@ import { execFileSync } from "node:child_process";
 import { basename, resolve } from "node:path";
 import { importRepository } from "../client/import.mjs";
 import { importIssues } from "../client/github.mjs";
-import { accept, transfer, makePrivate, maintainers, mirror, postCheck, publishOwnBox, readers, release, runCI, runnersOf } from "../client/team.mjs";
+import { accept, forkRepo, transfer, makePrivate, maintainers, mirror, postCheck, publishOwnBox, readers, release, runCI, runnersOf } from "../client/team.mjs";
 import { login } from "../client/signer.mjs";
 import { exportTo } from "../client/export.mjs";
 
-const usage = "usage: trellis import <github url or path> [<directory>]\n       trellis import-issues <github url>   (in a repository whose origin is trellis::)\n       trellis maintainers [add|remove <address>]   (likewise)\n       trellis mirror <sponsor url>   (likewise; in an up-to-date clone)\n       trellis login   (sign with Selfhold instead of a key file)\n       trellis release <tag> [--title <title>] [--notes <text>] [<file>...]   (in a repository whose origin is trellis::)\n       trellis export <git url>   (in a Trellis clone: its branches and tags as SHA-1, pushed there)\n       trellis private   (before a new repo's first push: only its members read it)\n       trellis readers [add|remove <address>]   (who reads a private repo)\n       trellis box   (publish your key file's box key, to be made a member of private repos)\n       trellis check <name> pending|pass|fail [--summary <s>] [--url <u>] [--commit <rev>]\n       trellis runners [add|remove <address>]\n       trellis ci [--once] [--every <seconds>] [--name <check>]   (run .trellis/ci on each new branch tip)\n       trellis transfer <address or @handle>[/<name>] | --cancel   (offer the repo to another account)\n       trellis accept   (in a clone of a repo offered to you: take it)";
+const usage = "usage: trellis import <github url or path> [<directory>]\n       trellis import-issues <github url>   (in a repository whose origin is trellis::)\n       trellis maintainers [add|remove <address>]   (likewise)\n       trellis mirror <sponsor url>   (likewise; in an up-to-date clone)\n       trellis login   (sign with Selfhold instead of a key file)\n       trellis release <tag> [--title <title>] [--notes <text>] [<file>...]   (in a repository whose origin is trellis::)\n       trellis export <git url>   (in a Trellis clone: its branches and tags as SHA-1, pushed there)\n       trellis private   (before a new repo's first push: only its members read it)\n       trellis readers [add|remove <address>]   (who reads a private repo)\n       trellis box   (publish your key file's box key, to be made a member of private repos)\n       trellis check <name> pending|pass|fail [--summary <s>] [--url <u>] [--commit <rev>]\n       trellis runners [add|remove <address>]\n       trellis ci [--once] [--every <seconds>] [--name <check>]   (run .trellis/ci on each new branch tip)\n       trellis transfer <address or @handle>[/<name>] | --cancel   (offer the repo to another account)\n       trellis accept   (in a clone of a repo offered to you: take it)\n       trellis fork   (in a clone of someone's repo: fork it; origin becomes yours, upstream theirs)";
 const [command, source, directory] = process.argv.slice(2);
 const configured = (key) => {
   try {
@@ -89,6 +89,9 @@ if (command === "import" && source) {
   const gitDir = resolve(execFileSync("git", ["rev-parse", "--git-dir"], { encoding: "utf8" }).trim());
   const cancel = source === "--cancel";
   transfer(gitDir, cancel ? undefined : source, { cancel, say }).then((to) => process.stdout.write(to ? `offered to ${to}: it moves once they run trellis accept in a clone\n` : "the offer is taken back\n"), fail);
+} else if (command === "fork") {
+  const gitDir = resolve(execFileSync("git", ["rev-parse", "--git-dir"], { encoding: "utf8" }).trim());
+  forkRepo(gitDir, { say }).then((at) => process.stdout.write(`forked: origin is trellis::${at}, upstream the original\n`), fail);
 } else if (command === "accept") {
   const gitDir = resolve(execFileSync("git", ["rev-parse", "--git-dir"], { encoding: "utf8" }).trim());
   accept(gitDir, { say }).then((at) => process.stdout.write(`it's yours: trellis::${at} (origin set to it). Its old address leads here. To keep its blocks with your sponsor too: trellis mirror <sponsor url>\n`), fail);

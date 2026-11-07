@@ -82,7 +82,11 @@ passkey and approves each write, and the sponsor in Settings takes the
 device's work for each fee, so taking part needs no coins.
 
 - **Fork** writes your card and copies the repo's refs. The blocks are the
-  original's, so nothing is uploaded.
+  original's, so nothing is uploaded. **Forks** lists a repo's forks. From
+  git, `trellis fork` in a clone does the same, then makes `origin` your fork
+  and `upstream` the original, as `gh repo fork` does. A fork keeps the
+  original's name, so pull requests between them find each other. Private
+  repos aren't forked: the copy would be public.
 - **Issues**: open, comment, close and reopen. The author and the repo's
   maintainers (its owner and the delegates its card names) can close one;
   maintainers label them.

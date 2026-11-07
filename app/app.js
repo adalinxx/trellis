@@ -342,8 +342,9 @@ function repoHead({ owner, name }, card, tab, ref) {
     ["search", "Search", href({ view: "search", owner, name, ref: ref ?? "HEAD" })],
   ];
   const fork = card?.forkOf ? `<p class="fork-of">Forked from <a href="${href({ view: "code", ...collab.repoOf(card.forkOf) })}">${esc(shortAccount(collab.repoOf(card.forkOf).owner))}/${esc(collab.repoOf(card.forkOf).name)}</a></p>` : "";
-  const forkButton = me && me !== owner ? `<button class="btn small" data-act="fork">Fork</button>` : "";
-  return `<div class="repo-head">${forkButton ? `<div class="head-acts">${forkButton}</div>` : ""}
+  const forkButton = me && me !== owner && !card?.private ? `<button class="btn small" data-act="fork">Fork</button>` : "";
+  const forksLink = `<a class="btn small" href="${href({ view: "forks", owner, name })}">Forks</a>`;
+  return `<div class="repo-head"><div class="head-acts">${forksLink}${forkButton}</div>
       <h1><a href="${href({ view: "owner", owner })}" class="owner" title="${esc(owner)}">${esc(shortAccount(owner))}</a> <span class="muted">/</span> <a href="${href({ view: "code", owner, name })}">${esc(name)}</a></h1>
       ${fork}${card?.description ? `<p class="lede">${esc(card.description)}</p>` : ""}
     </div>
@@ -407,6 +408,12 @@ async function repoPage(route, show) {
   if (talk) return head(talk) + (await talkPage(route, card, refs));
   if (refs.size === 0) return `${head("code")}<p class="empty">Nothing has been pushed yet.</p>${cloneBox(route)}`;
   if (route.view === "branches" || route.view === "tags") return head(route.view) + (await refList(route, card, refs));
+  if (route.view === "forks") {
+    const list = await records.forks(state, route.owner, route.name);
+    return head("code") + (list.length
+      ? `<h2>Forks</h2><ul class="forks">${list.map((a) => `<li><a href="${href({ view: "code", owner: a, name: route.name })}">${esc(shortAccount(a))}/${esc(route.name)}</a></li>`).join("")}</ul>`
+      : `<p class="empty">No forks yet.</p>`);
+  }
   if (route.view === "commit") return head("commits") + (await commitPage(route));
 
   const at = await resolve(refs, route.ref);
@@ -890,12 +897,8 @@ document.addEventListener("click", async (event) => {
     button.textContent = "Forking…";
     send(async (state) => {
       const card = await records.card(state, route.owner, route.name);
-      const refs = await records.refs(sdk, state, route.owner, route.name);
-      const fresh = !(await records.card(state, me, route.name));
-      return [
-        ...(fresh ? records.repo(me, route.name, { forkOf: `${route.owner}/${route.name}`, ...(card?.description && { description: card.description }) }) : []),
-        ...[...refs].flatMap(([ref, cid]) => records.ref(me, route.name, ref, cid)),
-      ];
+      const refs = await records.refs(sdk, state, route.owner, route.name, card ?? null);
+      return records.fork(me, route.owner, route.name, card, refs, await records.card(state, me, route.name));
     }, (text) => (button.textContent = text))
       .then(() => (location.hash = href({ view: "code", owner: me, name: route.name })))
       .catch((error) => {
