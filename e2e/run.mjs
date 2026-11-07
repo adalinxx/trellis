@@ -244,6 +244,11 @@ try {
   assert.equal(run(cloneDir, "rev-parse", "origin/main"), byAlice);
   console.log("team: a maintainer pushes with their own key; once dropped, can't, and main stays put");
 
+  // A mirror keeps every block of the repo through a sponsor, from a clone;
+  // a clone that lacks a branch is told to fetch first.
+  assert.match(trellis(helperEnv(readerNode), cloneDir, "mirror", sponsorURL), /^\d+ blocks kept by /);
+  console.log("trellis mirror: the repo's blocks kept again, made from a clone");
+
   // trellis import: a SHA-1 repository on master, signed, then pushed whole.
   const old = join(work, "old-project");
   mkdirSync(old);

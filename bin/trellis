@@ -4,14 +4,15 @@
 // trellis import-issues <github repo>: its issues and pull requests, in a
 // repository pushed to Trellis. See client/github.mjs.
 // trellis maintainers [add|remove <address>]: who besides the owner may push.
+// trellis mirror <sponsor>: every block of the repo kept by that sponsor too.
 // See client/team.mjs.
 import { execFileSync } from "node:child_process";
 import { basename, resolve } from "node:path";
 import { importRepository } from "../client/import.mjs";
 import { importIssues } from "../client/github.mjs";
-import { maintainers } from "../client/team.mjs";
+import { maintainers, mirror } from "../client/team.mjs";
 
-const usage = "usage: trellis import <github url or path> [<directory>]\n       trellis import-issues <github url>   (in a repository whose origin is trellis::)\n       trellis maintainers [add|remove <address>]   (likewise)";
+const usage = "usage: trellis import <github url or path> [<directory>]\n       trellis import-issues <github url>   (in a repository whose origin is trellis::)\n       trellis maintainers [add|remove <address>]   (likewise)\n       trellis mirror <sponsor url>   (likewise; in an up-to-date clone)";
 const [command, source, directory] = process.argv.slice(2);
 const say = (line) => process.stderr.write(`trellis: ${line}\n`);
 const fail = (error) => {
@@ -41,6 +42,9 @@ if (command === "import" && source) {
 } else if (command === "maintainers") {
   const gitDir = resolve(execFileSync("git", ["rev-parse", "--git-dir"], { encoding: "utf8" }).trim());
   maintainers(gitDir, source, directory, { say }).then((list) => process.stdout.write(list.map((a, i) => `${a}${i ? "" : "  (owner)"}\n`).join("")), fail);
+} else if (command === "mirror" && source) {
+  const gitDir = resolve(execFileSync("git", ["rev-parse", "--git-dir"], { encoding: "utf8" }).trim());
+  mirror(gitDir, source, { say }).then((n) => process.stdout.write(`${n} blocks kept by ${source}\n`), fail);
 } else {
   process.stderr.write(`${usage}\n`);
   process.exit(2);

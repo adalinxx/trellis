@@ -73,6 +73,51 @@ export function delegation(owner, name, card, words, delegates) {
   ];
 }
 
+/**
+ * `trellis mirror <sponsor>`, in an up-to-date clone: every block of the
+ * repo's branches and tags kept by another sponsor too (one the team runs,
+ * say), so the repo outlives any one host. Blocks are the same however they
+ * are made, so they are made from the clone, not downloaded.
+ */
+export async function mirror(gitDir, sponsor, { say = () => {} } = {}) {
+  if (!sponsor) throw new Error("trellis mirror <sponsor url>");
+  const { encode } = await import("./transfer.mjs");
+  const { objectReader, objectsBetween, requireSha256 } = await import("./git.mjs");
+  const { keepAll } = await import("./remote.mjs");
+  const { readObject } = await import("./objects.mjs");
+  requireSha256(gitDir);
+  const { sdk, owner, name, chain, chainPath } = await origin(gitDir);
+  const refs = await records.refs(sdk, await chain.state(), owner, name);
+  if (!refs.size) throw new Error(`${owner}/${name} has no branches or tags`);
+  const ids = [];
+  for (const [ref, cid] of refs) {
+    const id = readObject(sdk, cid, await chain.block(cid))?.block?.id;
+    if (!id) throw new Error(`${ref}'s block isn't a commit or tag`);
+    ids.push([ref, id, cid]);
+  }
+  const { execFileSync } = await import("node:child_process");
+  const missing = ids.filter(([, id]) => {
+    try {
+      execFileSync("git", ["--git-dir", gitDir, "cat-file", "-e", id], { stdio: "ignore" });
+      return false;
+    } catch {
+      return true;
+    }
+  });
+  if (missing.length) throw new Error(`this clone lacks ${missing.map(([ref]) => ref).join(", ")}: git fetch origin first`);
+  const known = new Map();
+  const objects = objectReader(gitDir);
+  let volumes;
+  try {
+    volumes = await encode(sdk, objects.read, objectsBetween(gitDir, ids.map(([, id]) => id), []), known);
+  } finally {
+    objects.close();
+  }
+  for (const [ref, id, cid] of ids) if (known.get(id) !== cid) throw new Error(`${ref} made a different block here than on the chain`);
+  await keepAll(sdk, sponsor, chainPath, volumes, say);
+  return volumes.length;
+}
+
 /** `trellis maintainers [add|remove <address>]`. */
 export async function maintainers(gitDir, verb, who, { say = () => {} } = {}) {
   const repo = await origin(gitDir);

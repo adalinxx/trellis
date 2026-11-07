@@ -7,7 +7,8 @@
 // environment:
 //
 //   trellis.node     TRELLIS_NODE     nodes' public read URLs, comma-separated; the first takes writes
-//   trellis.sponsor  TRELLIS_SPONSOR  a lattice-sponsor: pays fees and keeps objects for work (no coins)
+//   trellis.sponsor  TRELLIS_SPONSOR  lattice-sponsors, comma-separated: each keeps the objects for work
+//                                     (no coins); the first also pays the fee
 //   trellis.key      TRELLIS_KEY      a key file (`lattice key generate`), to push
 //   trellis.chain    TRELLIS_CHAIN    the chain, Nexus/trellis by default
 //
@@ -118,6 +119,14 @@ function cidCache(gitDir) {
   };
 }
 
+/** Every block in `volumes` kept by `sponsor`, paid with this machine's work. */
+export async function keepAll(sdk, sponsor, chainPath, volumes, say = () => {}) {
+  const workOn = await storageChain(sponsor, chainPath.join("/"));
+  if (!workOn) throw new Error("it keeps no files (no storage rate in its /terms)");
+  say(`keeping ${volumes.length} blocks through ${sponsor}`);
+  await keep(sdk, sponsor, workOn, volumes, { progress: ({ stored, total }) => say(`kept ${stored}/${total}`) });
+}
+
 async function waitFor(label, condition, seconds) {
   const deadline = Date.now() + seconds * 1000;
   for (;;) {
@@ -209,7 +218,8 @@ export async function main(argv = process.argv.slice(2)) {
   async function pushFrom(specs) {
     requireSha256(gitDir);
     const keyFile = setting(gitDir, "key", "TRELLIS_KEY");
-    const sponsor = setting(gitDir, "sponsor", "TRELLIS_SPONSOR");
+    const sponsors = (setting(gitDir, "sponsor", "TRELLIS_SPONSOR") ?? "").split(",").map((u) => u.trim()).filter(Boolean);
+    const sponsor = sponsors[0];
     const fail = (why) => specs.map((spec) => `error ${spec.split(":")[1]} ${why}\n`).join("");
     if (!keyFile) return fail("no key: set trellis.key (git config) or TRELLIS_KEY to a key file");
     if (!sponsor) return fail("no sponsor: set trellis.sponsor (git config) or TRELLIS_SPONSOR");
@@ -265,6 +275,14 @@ export async function main(argv = process.argv.slice(2)) {
       if (!workOn) return fail("the sponsor keeps no files (no storage rate in its /terms)");
       say(`keeping ${volumes.length} blocks through the sponsor, paid with this machine's work`);
       await keep(sdk, sponsor, workOn, volumes, { progress: ({ stored, total }) => say(`kept ${stored}/${total}`) });
+      // More sponsors keep more copies; one that can't now is caught up by `trellis mirror`.
+      for (const other of sponsors.slice(1)) {
+        try {
+          await keepAll(sdk, other, chainPath, volumes, say);
+        } catch (error) {
+          say(`${other} didn't keep them (${error.message}); run \`trellis mirror ${other}\` later`);
+        }
+      }
     }
     // Only now: the cache stands for what is kept, and a push that stopped
     // before every block was kept must send them again.

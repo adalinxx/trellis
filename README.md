@@ -105,6 +105,21 @@ branch that land in the same block can't both stand: the one that loses says
 so (`another maintainer pushed to it at the same time`), and fetching and
 pushing again puts it on top.
 
+### Keeping a repo
+
+A repo's blocks are kept by the sponsors that push or mirror it, each on its
+own node. `trellis.sponsor` may list several, comma-separated: every push is
+kept by each of them (the first pays the fee), so the repo outlives any one
+host. To have one more sponsor keep a whole repo, from an up-to-date clone:
+
+```sh
+trellis mirror https://<a sponsor your team runs>
+```
+
+The blocks are made from the clone, with the same CIDs, so nothing is
+downloaded. The chain itself (refs, issues, reviews, releases) is kept by
+every node that hosts it.
+
 ### Bring a repo from GitHub
 
 ```sh
