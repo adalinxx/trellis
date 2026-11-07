@@ -23,7 +23,7 @@ import { git, objectReader, objectsBetween, requireSha256, store } from "./git.m
 import { readObject } from "./objects.mjs";
 import * as records from "./records.mjs";
 import { keep, sponsored, storageChain } from "./sponsor.mjs";
-import { anyHost, tip, view, volumeLoader } from "./state.mjs";
+import { anyHost, heldFirst, tip, view, volumeLoader } from "./state.mjs";
 import { encode, fetchObjects } from "./transfer.mjs";
 import { changes, transaction } from "./write.mjs";
 
@@ -45,10 +45,28 @@ export function parseAddress(address) {
   return { owner: match[1], name: records.checkName(match[2]) };
 }
 
+/** The public read URLs of the nodes that host `chainPath`, as `url` knows them; none if it can't say. */
+export async function endpoints(url, chainPath) {
+  try {
+    const response = await fetch(`${url}/api/chain/endpoints?chainPath=${chainPath.join("/")}`, { signal: AbortSignal.timeout(10_000) });
+    const found = response.ok ? (await response.json()).endpoints : [];
+    return (Array.isArray(found) ? found : []).filter((u) => typeof u === "string" && /^https?:\/\//.test(u)).map((u) => u.replace(/\/+$/, ""));
+  } catch {
+    return [];
+  }
+}
+
 /** The chain as nodes serve it: state at the tip, blocks by CID, and where writes go. */
 export function chainAt(urls, chainPath) {
   const transports = urls.map((url) => new sdk.BatchingVolumeTransport(new sdk.HTTPVolumeTransport(`${url}/volumes`, { chainPath })));
-  const client = new sdk.VolumeClient(anyHost(transports));
+  // Every node that hosts the chain, as the first lists them, is asked for
+  // the blocks it holds before any node fetches one from its peers.
+  let hosts;
+  const allHosts = () =>
+    (hosts ??= endpoints(urls[0], chainPath).then((found) =>
+      [...new Set([...urls, ...found])].map((url) => new sdk.HTTPVolumeTransport(`${url}/volumes`, { chainPath })),
+    ));
+  const client = new sdk.VolumeClient(heldFirst(allHosts, anyHost(transports)));
   // A node may answer 503 while it fetches new content from its peers, one
   // or a few Volumes at a time, so one read can wait behind many others.
   // Content is addressed by CID, so asking again is always safe; give up only

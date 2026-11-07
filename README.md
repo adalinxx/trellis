@@ -42,11 +42,11 @@ git config trellis.chain Nexus/testnet/trellis
 
 Testnet may be reset; don't keep anything only there.
 
-Clone from a node that keeps the repo's blocks (the sponsor's host keeps
-everything pushed through it). Any node can serve a clone, but one that
-doesn't hold the blocks fetches each from its peers, a few at a time: a
-3,200-object repo clones in about 16 s from the host and about 5 minutes
-through such a node.
+Any node that hosts the chain can serve a clone. The helper asks it which
+nodes host the chain (`/api/chain/endpoints`) and asks all of them at once for
+the blocks each holds, so blocks come from the nodes that keep them (the
+sponsors' hosts); only a block none of them holds is fetched from peers. ky's
+4,267 objects clone in about 45 s on testnet through either node.
 
 ### Browse
 
