@@ -11,7 +11,9 @@
 //                                     (no coins); the first also pays the fee
 //   trellis.key      TRELLIS_KEY      a key file (`lattice key generate`), to push
 //   trellis.chain    TRELLIS_CHAIN    the chain, Nexus/trellis by default
+//   trellis.moniker  TRELLIS_MONIKER  where @handles are read, Nexus/moniker by default
 //
+// <owner> may be an @handle: the account that shows it on Moniker now.
 // It speaks git's remote-helper protocol (gitremote-helpers(7)) on stdin and
 // stdout, and reports progress on stderr. Node only.
 import { createInterface } from "node:readline";
@@ -21,6 +23,7 @@ import { join, resolve } from "node:path";
 import * as sdk from "../vendor/lattice-sdk.js";
 import { git, objectReader, objectsBetween, requireSha256, store } from "./git.mjs";
 import { readObject } from "./objects.mjs";
+import { addressOf } from "./names.mjs";
 import * as records from "./records.mjs";
 import { keep, sponsored, storageChain } from "./sponsor.mjs";
 import { anyHost, heldFirst, tip, view, volumeLoader } from "./state.mjs";
@@ -41,9 +44,12 @@ export function setting(gitDir, name, variable) {
 /** The address `trellis::<owner>/<repo>` names. */
 export function parseAddress(address) {
   const match = /^([^/]+)\/([^/]+?)(?:\.git)?\/?$/.exec(address.replace(/^trellis:\/\//, ""));
-  if (!match) throw new Error(`not a Trellis address: ${address} (trellis::<owner>/<repo>)`);
+  if (!match) throw new Error(`not a Trellis address: ${address} (trellis::<owner or @handle>/<repo>)`);
   return { owner: match[1], name: records.checkName(match[2]) };
 }
+
+/** Moniker's state, read where @handles live (trellis.moniker, Nexus/moniker by default). */
+export const monikerAt = (gitDir, urls) => () => chainAt(urls, (setting(gitDir, "moniker", "TRELLIS_MONIKER") ?? "Nexus/moniker").split("/")).state();
 
 /** The public read URLs of the nodes that host `chainPath`, as `url` knows them; none if it can't say. */
 export async function endpoints(url, chainPath) {
@@ -158,10 +164,12 @@ export async function main(argv = process.argv.slice(2)) {
   if (!process.env.GIT_DIR) throw new Error("git-remote-trellis runs under git (GIT_DIR is not set)");
   // git may pass it relative; every git command here runs with -C it.
   const gitDir = (process.env.GIT_DIR = resolve(process.env.GIT_DIR));
-  const { owner, name } = parseAddress(argv[1] ?? argv[0]);
+  const parsed = parseAddress(argv[1] ?? argv[0]);
   const urls = (setting(gitDir, "node", "TRELLIS_NODE") ?? "").split(",").map((u) => u.trim().replace(/\/+$/, "")).filter(Boolean);
   if (urls.length === 0) throw new Error("no Trellis node: set trellis.node (git config) or TRELLIS_NODE");
   const chainPath = (setting(gitDir, "chain", "TRELLIS_CHAIN") ?? "Nexus/trellis").split("/");
+  const { name } = parsed;
+  const owner = await addressOf(monikerAt(gitDir, urls), parsed.owner);
   const chain = chainAt(urls, chainPath);
   const cache = cidCache(gitDir);
 

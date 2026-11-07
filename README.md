@@ -88,6 +88,18 @@ device's work for each fee, so taking part needs no coins.
 - **Releases**: a maintainer writes notes for a tag; they show on the Tags
   page.
 
+### Names
+
+Wherever an address goes, an @handle from
+[Moniker](https://github.com/adalinxx/moniker), the names chain Lattice apps
+share, goes too: `git clone trellis::@alice/tools`, `trellis maintainers add
+@bob`, and `#/@alice/tools` in the page, which shows every account by the
+handle it shows. A handle stands for an account only while that account names
+it on Moniker and the handle points at it, Moniker's own rule; a handle sold
+or pointed elsewhere stops meaning the old account. Handles are read from
+`Nexus/moniker` (`trellis.moniker`, or Names in the page's Settings) through
+the same nodes.
+
 ### Teams
 
 A repo's maintainers are its owner and the delegates the owner names. Each

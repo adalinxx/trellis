@@ -12,16 +12,20 @@ export async function origin(gitDir) {
   const sdk = await import("../vendor/lattice-sdk.js");
   const { readFileSync } = await import("node:fs");
   const { execFileSync } = await import("node:child_process");
-  const { chainAt, parseAddress, setting } = await import("./remote.mjs");
+  const { chainAt, monikerAt, parseAddress, setting } = await import("./remote.mjs");
+  const { addressOf } = await import("./names.mjs");
   const { sponsored } = await import("./sponsor.mjs");
   const { changes, transaction } = await import("./write.mjs");
 
   const url = execFileSync("git", ["--git-dir", gitDir, "remote", "get-url", "origin"], { encoding: "utf8" }).trim();
   if (!url.startsWith("trellis::")) throw new Error(`origin is ${url}, not a trellis:: address`);
-  const { owner, name } = parseAddress(url.slice("trellis::".length));
+  const parsed = parseAddress(url.slice("trellis::".length));
   const get = (key, variable) => setting(gitDir, key, variable);
   const urls = (get("node", "TRELLIS_NODE") ?? "").split(",").map((u) => u.trim().replace(/\/+$/, "")).filter(Boolean);
   if (!urls.length) throw new Error("set trellis.node (git config) first");
+  const moniker = monikerAt(gitDir, urls);
+  const { name } = parsed;
+  const owner = await addressOf(moniker, parsed.owner);
   const chainPath = (get("chain", "TRELLIS_CHAIN") ?? "Nexus/trellis").split("/");
   const chain = chainAt(urls, chainPath);
   const signer = () => {
@@ -37,6 +41,8 @@ export async function origin(gitDir) {
     chain,
     chainPath,
     signer,
+    /** `who` (an address or @handle) as an address. */
+    addressOf: (who) => addressOf(moniker, who),
     /** Writes `[key, value]` pairs as the key's account; resolves once they read back. */
     async write(writes, { say = () => {}, wait = Number(process.env.TRELLIS_WAIT_SECONDS ?? 600) * 1000 } = {}) {
       const sponsor = get("sponsor", "TRELLIS_SPONSOR");
@@ -128,7 +134,8 @@ export async function maintainers(gitDir, verb, who, { say = () => {} } = {}) {
   const now = records.maintainers(owner, card);
   if (!verb) return now;
   if (verb !== "add" && verb !== "remove") throw new Error(`trellis maintainers add|remove <address>, not ${verb}`);
-  if (!who || who.includes("/")) throw new Error("name the account by its address");
+  if (!who || who.includes("/")) throw new Error("name the account by its address or @handle");
+  who = await repo.addressOf(who);
   if (repo.signer().address !== owner) throw new Error(`only ${owner}, the owner, changes who maintains ${owner}/${name}`);
   if (who === owner) throw new Error("the owner always maintains the repo");
   const delegates = verb === "add" ? [...new Set([...(card.delegates ?? []), who])] : (card.delegates ?? []).filter((d) => d !== who);

@@ -13,7 +13,8 @@ import * as collab from "../client/collab.mjs";
 import { changes } from "../client/write.mjs";
 import { selfhold } from "./vendor/selfhold.mjs";
 import { Marked } from "./vendor/marked.esm.js";
-import { ago, bytes, defaultBranch, esc, fullRef, href, imageType, linkTarget, parseRoute, shortAccount, shortRef, subject } from "./lib.mjs";
+import { ago, bytes, defaultBranch, esc, fullRef, href, imageType, linkTarget, parseRoute, shortAccount as shortId, shortRef, subject } from "./lib.mjs";
+import { addressOf, handleOf } from "../client/names.mjs";
 
 const $ = (s) => document.querySelector(s);
 const DEFAULTS = {
@@ -55,14 +56,18 @@ const query = new URLSearchParams(location.search);
 const settings = {
   node: (query.get("node") || saved("node") || DEFAULTS.node).replace(/\/+$/, ""),
   chain: query.get("chain") || saved("chain") || DEFAULTS.chain,
+  moniker: query.get("moniker") || saved("moniker") || "Nexus/moniker",
   sponsor: query.get("sponsor") ?? saved("sponsor") ?? DEFAULTS.sponsor,
   wallet: walletPage(query.get("wallet") ?? WALLET_PAGE),
 };
 
-// The chain, as the node in Settings serves it.
-let chain;
+// The chain, as the node in Settings serves it, and Moniker, where @handles are.
+let chain, moniker;
 function connect() {
-  const chainPath = settings.chain.split("/");
+  chain = connectTo(settings.chain.split("/"));
+  moniker = connectTo(settings.moniker.split("/"));
+}
+function connectTo(chainPath) {
   const client = new sdk.VolumeClient(new sdk.BatchingVolumeTransport(new sdk.HTTPVolumeTransport(`${settings.node}/volumes`, { chainPath })));
   // A node answers 503 while it fetches content from its peers: ask again.
   const volumes = {
@@ -82,7 +87,7 @@ function connect() {
   // newer state costs only the nodes that changed.
   const load = volumeLoader(volumes, sdk.decodeDagCbor);
   let current;
-  chain = {
+  return {
     read,
     path: chainPath,
     /** Forget the state read, so the next read is at the node's new tip. */
@@ -201,11 +206,40 @@ async function render() {
     if (mine === rendering) {
       main().removeAttribute("aria-busy");
       afterRender();
+      readHandles().then((found) => found && mine === rendering && render(), () => {});
     }
   }
 }
 
+// An account as people know it: the @handle it shows on Moniker, else its
+// short id. Handles not yet read are read after the page shows, and the page
+// shown again with them.
+const handles = new Map();
+const wantHandles = new Set();
+const shortAccount = (address) => {
+  if (!handles.has(address)) wantHandles.add(address);
+  const h = handles.get(address);
+  return h ? `@${h}` : shortId(address);
+};
+async function readHandles() {
+  const wanted = [...wantHandles].filter((a) => a && !handles.has(a));
+  wantHandles.clear();
+  if (!wanted.length) return false;
+  const state = await moniker.state().catch(() => undefined);
+  const found = await Promise.all(wanted.map((a) => (state ? handleOf(state, a).catch(() => undefined) : undefined)));
+  wanted.forEach((a, i) => handles.set(a, found[i] ?? null));
+  return found.some(Boolean);
+}
+
 async function page(route, show) {
+  // trellis::@alice/repo, or #/@alice/repo: whoever shows @alice now.
+  if (route.owner?.startsWith("@")) {
+    const handle = route.owner.slice(1);
+    route.owner = await addressOf(() => moniker.state(), route.owner);
+    handles.set(route.owner, handle);
+    // The page's own links and actions name the account.
+    history.replaceState(null, "", href(route));
+  }
   if (route.view === "home") return home();
   if (route.view === "settings") return settingsPage();
   if (route.view === "owner") return ownerPage(route.owner);
@@ -503,6 +537,8 @@ function settingsPage() {
       <label for="node">Node</label><input type="url" id="node" value="${esc(settings.node)}" required>
       <p class="hint">Any Lattice node serving the chain's public reads. Every block it serves is checked against its CID.</p>
       <label for="chain">Chain</label><input type="text" id="chain" value="${esc(settings.chain)}" required>
+      <label for="moniker">Names</label><input type="text" id="moniker" value="${esc(settings.moniker)}" required>
+      <p class="hint">The Moniker chain @handles are read from: an account shows @alice only while it names alice there and alice points at it.</p>
       <label for="sponsor">Sponsor</label><input type="url" id="sponsor" value="${esc(settings.sponsor)}">
       <p class="hint">Takes this device's work for each write's fee, so writing needs no coins. Empty: fees are paid in coins.</p>
       <div class="row2"><button type="button" class="btn" data-act="defaults">Defaults</button><button class="btn primary">Save</button></div>
@@ -686,6 +722,7 @@ document.addEventListener("click", async (event) => {
   if (act === "defaults") {
     $("#node").value = DEFAULTS.node;
     $("#chain").value = DEFAULTS.chain;
+    $("#moniker").value = "Nexus/moniker";
     $("#sponsor").value = DEFAULTS.sponsor;
   }
   if (act === "signin") signIn().catch((error) => notice(walletMessage(error)));
@@ -781,9 +818,12 @@ document.addEventListener("submit", (event) => {
     event.preventDefault();
     settings.node = $("#node").value.trim().replace(/\/+$/, "");
     settings.chain = $("#chain").value.trim();
+    settings.moniker = $("#moniker").value.trim();
+    handles.clear();
     settings.sponsor = $("#sponsor").value.trim();
     save("node", settings.node === DEFAULTS.node ? "" : settings.node);
     save("chain", settings.chain === DEFAULTS.chain ? "" : settings.chain);
+    save("moniker", settings.moniker === "Nexus/moniker" ? "" : settings.moniker);
     try {
       if (settings.sponsor === DEFAULTS.sponsor) localStorage.removeItem("trellis:sponsor");
       else localStorage.setItem("trellis:sponsor", settings.sponsor);
