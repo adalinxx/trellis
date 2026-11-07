@@ -235,6 +235,23 @@ test("an issue: opened by Bob, labelled and closed by Carol, commented on and re
   await expect(page.locator(".issue-row .label")).toHaveText(["bug", "beds"]);
 });
 
+test("the inbox: Carol hears of Bob's issue and comment; Bob of Carol's reply", async () => {
+  const notes = await collab.inbox(await state(authorNode), carol.address);
+  assert.deepEqual(notes.map((n) => [n.kind, n.from, n.title]), [["comment", bob, "Weeds in the beds"], ["issue", bob, "Weeds in the beds"]]);
+  const id = collab.newId();
+  const time = Math.floor(Date.now() / 1000) + 1;
+  const post = { on: notes[0].thread, body: "Pulling them today.", time };
+  await writeAs(carol, [...collab.post(carol.address, id, post), ...collab.notify(carol.address, [bob, carol.address], time, id, { kind: "comment", repo: notes[0].repo, thread: post.on })]);
+  await page.goto(appURL("/"));
+  await expect(page.locator("#unread")).toHaveText(" 1");
+  await page.getByRole("link", { name: /^Inbox/ }).click();
+  await expect(page.locator(".inbox-list li.unread")).toHaveCount(1);
+  await expect(page.locator(".inbox-list li")).toContainText(["commented on Weeds in the beds"]);
+  await expect(page.locator("#unread")).toHaveText("");
+  await page.locator(".inbox-list li a").first().click();
+  await expect(page.locator(".comment").last()).toContainText("Pulling them today.");
+});
+
 test("a write declined in Selfhold is not sent", async () => {
   await page.goto(appURL(`${garden()}/issues`));
   await page.locator(".issue-title").first().click();
@@ -244,7 +261,7 @@ test("a write declined in Selfhold is not sent", async () => {
   await page.bringToFront();
   await expect(page.locator(".comment-form .status")).toHaveText("You declined it in Selfhold. Nothing was sent.");
   await page.reload();
-  await expect(page.locator(".comment")).toHaveCount(2);
+  await expect(page.locator(".comment")).toHaveCount(3);
 });
 
 test("a pull request from Dave's fork: a line reviewed, merged by Carol's push, shown as merged", async () => {

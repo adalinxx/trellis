@@ -19,6 +19,7 @@ export function parseRoute(hash) {
   const query = new URLSearchParams(hash.includes("?") ? hash.slice(hash.indexOf("?") + 1) : "");
   if (parts.length === 0) return { view: "home" };
   if (parts[0] === "settings") return { view: "settings" };
+  if (parts[0] === "inbox" && parts.length === 1) return { view: "inbox" };
   if (parts.length === 1) return { view: "owner", owner: parts[0] };
   const [owner, name, view = "code", ref, ...path] = parts;
   if (view === "commit") return { view, owner, name, cid: ref };
@@ -35,6 +36,7 @@ export function href({ view, owner, name, ref, path, cid, limit, closed, author,
   const e = encodeURIComponent;
   if (view === "home") return "#/";
   if (view === "settings") return "#/settings";
+  if (view === "inbox") return "#/inbox";
   if (view === "owner") return `#/${e(owner)}`;
   const base = `#/${e(owner)}/${e(name)}`;
   if (view === "commit") return `${base}/commit/${e(cid)}`;

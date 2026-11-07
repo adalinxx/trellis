@@ -87,6 +87,11 @@ device's work for each fee, so taking part needs no coins.
   says so.
 - **Releases**: a maintainer writes notes for a tag; they show on the Tags
   page.
+- **Inbox**: whoever opens an issue or pull request, or comments, tells the
+  repo's maintainers, the thread's author and commenters, and anyone they
+  mention by @handle, in the same transaction. The Inbox shows these notes,
+  newest first, each only if what it names is there; which are read is kept
+  on the device.
 
 ### Names
 

@@ -10,7 +10,12 @@
 //   index/post/<author>/<id>/<post id>/<a>           "1"   lists it under the issue
 //   user/<m>/triage/<owner>/<name>/<author>/<id>     { state?, labels?, time }   a maintainer's word on it
 //   user/<m>/release/<name>/<tag>                    { title?, notes, time }     a maintainer's release
+//   index/inbox/<to>/<time>/<id>/<a>                 { kind, repo, thread }      tells <to> of <a>'s issue or comment <id>
 //
+// Whoever writes an issue or comment also tells the people it concerns, in
+// the same transaction: the repo's maintainers, and for a comment the
+// thread's author and earlier commenters, and anyone it mentions by @handle. Each reads their inbox in one prefix read,
+// and a note counts only if the record it names is there.
 // A pull request is an issue with `head: "<a>/<name>:<branch>"` (any repo's
 // branch) and `base: "<branch>"` (the repo's). It is merged once the base
 // branch contains the head's commit: merging is a push, and needs no record.
@@ -72,6 +77,19 @@ export const triage = (m, owner, name, author, id, record) => [[triageKey(m, own
 /** Maintainer `m` writes the release of tag `tag` in their repo `name`. */
 export const release = (m, name, tag, record) => [[releaseKey(m, name, tag), json(record)]];
 
+/** The inbox key that tells `to` of `a`'s record `id`, written at `time`. */
+export const inboxKey = (to, time, id, a) => `index/inbox/${to}/${String(time).padStart(12, "0")}/${id}/${a}`;
+
+/**
+ * `a` tells each of `to` (but themself) of their issue or comment `id`:
+ * `note` is `{ kind: "issue" | "pull" | "comment" | "review", repo, thread: "<author>/<id>" }`.
+ */
+export const notify = (a, to, time, id, note) =>
+  [...new Set(to)].filter((t) => typeof t === "string" && t && t !== a && !t.includes("/")).slice(0, 50).map((t) => [inboxKey(t, time, id, a), json(note)]);
+
+/** The @handles a body mentions, at most ten, without the @. */
+export const mentions = (body) => [...new Set([...String(body).matchAll(/(?:^|[^\w@/])@([a-z0-9_]{1,32})\b/g)].map((m) => m[1]))].slice(0, 10);
+
 // ---- Reads, from a state view `{ get, list }` (state.mjs).
 
 /** `"<owner>/<name>"` as its parts. */
@@ -107,6 +125,43 @@ export function readPost(value, on) {
     return { on, body: r.body, time: r.time, review: { commit, path, line, side } };
   }
   return { on, body: r.body, time: r.time };
+}
+
+/**
+ * Who a new record on `<owner>/<name>` concerns: the repo's maintainers, and
+ * with `thread` (`{ author, id }`, a comment there) its author and everyone
+ * who commented. Plus `also` (mentioned).
+ */
+export async function concerned(state, owner, name, card, thread, also = []) {
+  if (!thread) return [...maintainers(owner, card), ...also];
+  return [thread.author, ...maintainers(owner, card), ...(await posts(state, thread.author, thread.id)).map((p) => p.by), ...also];
+}
+
+/**
+ * `me`'s inbox, newest first, at most `limit`: `[{ from, id, time, kind, repo,
+ * thread, title, body? }]`, each only if the issue or comment it names is
+ * there, by whom the note says, on the thread and repo it says.
+ */
+export async function inbox(state, me, { limit = 100 } = {}) {
+  const prefix = `index/inbox/${me}/`;
+  const notes = [];
+  for await (const [key, value] of state.list(prefix)) {
+    const [time, id, from, ...rest] = key.slice(prefix.length).split("/");
+    const note = parse(value);
+    if (rest.length || !ID.test(id ?? "") || !/^\d{12}$/.test(time) || !note || !["issue", "pull", "comment", "review"].includes(note.kind)) continue;
+    notes.push({ from, id, time: Number(time), kind: note.kind, repo: String(note.repo), thread: String(note.thread) });
+  }
+  const newest = notes.reverse().slice(0, limit);
+  const checked = await Promise.all(newest.map(async (n) => {
+    const [author, tid] = n.thread.split("/");
+    if (!author || !ID.test(tid ?? "")) return undefined;
+    const issue = readIssue(await state.get(issueKey(author, tid)), n.repo);
+    if (!issue) return undefined;
+    if (n.kind === "issue" || n.kind === "pull") return n.from === author && n.id === tid && Boolean(issue.head) === (n.kind === "pull") ? { ...n, title: issue.title, body: issue.body } : undefined;
+    const post = readPost(await state.get(postKey(n.from, n.id)), n.thread);
+    return post && Boolean(post.review) === (n.kind === "review") ? { ...n, title: issue.title, body: post.body, pull: Boolean(issue.head) } : undefined;
+  }));
+  return checked.filter(Boolean);
 }
 
 function readTriage(value) {

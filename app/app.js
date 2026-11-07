@@ -14,7 +14,7 @@ import { changes } from "../client/write.mjs";
 import { selfhold } from "./vendor/selfhold.mjs";
 import { Marked } from "./vendor/marked.esm.js";
 import { ago, bytes, defaultBranch, esc, fullRef, href, imageType, linkTarget, parseRoute, shortAccount as shortId, shortRef, subject } from "./lib.mjs";
-import { addressOf, handleOf } from "../client/names.mjs";
+import { accountOf, addressOf, handleOf } from "../client/names.mjs";
 
 const $ = (s) => document.querySelector(s);
 const DEFAULTS = {
@@ -117,8 +117,46 @@ let me = null;
 
 function renderWho() {
   $("#who").innerHTML = me
-    ? `<a class="me" href="${href({ view: "owner", owner: me })}" title="${esc(me)}">${esc(shortAccount(me))}</a><button class="btn small" data-act="signout">Sign out</button>`
+    ? `<a class="inbox" href="${href({ view: "inbox" })}">Inbox<span id="unread"></span></a><a class="me" href="${href({ view: "owner", owner: me })}" title="${esc(me)}">${esc(shortAccount(me))}</a><button class="btn small" data-act="signout">Sign out</button>`
     : `<button class="btn small primary" data-act="signin">Sign in</button>`;
+  if (me) countUnread();
+}
+
+// The inbox: notes from the chain (client/collab.mjs); which are read is this
+// device's own memory, the time of the newest note seen.
+const seenKey = () => `seen:${me}`;
+const seen = () => Number(saved(seenKey()) ?? 0);
+async function countUnread() {
+  const notes = await collab.inbox(await chain.state(), me, { limit: 50 }).catch(() => []);
+  const n = notes.filter((note) => note.time > seen()).length;
+  const badge = $("#unread");
+  if (badge) badge.textContent = n ? ` ${n > 49 ? "50+" : n}` : "";
+}
+
+async function inboxPage() {
+  if (!me) return `<h1>Inbox</h1><p class="empty">Sign in to see who wrote to you.</p>`;
+  const notes = await collab.inbox(await chain.state(), me);
+  const before = seen();
+  if (notes.length) save(seenKey(), String(Math.max(before, notes[0].time)));
+  countUnread();
+  const what = { issue: "opened an issue", pull: "opened a pull request", comment: "commented on", review: "reviewed a line of" };
+  const items = notes.map((n) => {
+    const { owner, name } = collab.repoOf(n.repo);
+    const [author, id] = n.thread.split("/");
+    const link = href({ view: n.kind === "pull" || n.pull ? "pull" : "issue", owner, name, author, id });
+    const excerpt = n.body.replace(/\s+/g, " ").trim().slice(0, 160);
+    return `<li class="${n.time > before ? "unread" : ""}"><a href="${link}"><strong>${esc(shortAccount(n.from))}</strong> ${esc(what[n.kind])} <strong>${esc(n.title)}</strong></a>
+      <span class="muted">in ${esc(shortAccount(owner))}/${esc(name)} · ${esc(ago(n.time))}</span>${excerpt ? `<p class="muted">${esc(excerpt)}</p>` : ""}</li>`;
+  });
+  return `<h1>Inbox</h1>${items.length ? `<ul class="list inbox-list">${items.join("")}</ul>` : `<p class="empty">Nothing yet. You hear here of new issues and pull requests on repos you maintain, comments on threads you're in, and mentions of your @handle.</p>`}`;
+}
+
+/** Who a new issue or comment concerns, mentioned @handles included: see collab.concerned. */
+async function concerned(state, route, thread, body) {
+  const card = await records.card(state, route.owner, route.name);
+  const names = await moniker.state().catch(() => undefined);
+  const mentioned = names ? (await Promise.all(collab.mentions(body).map((h) => accountOf(names, h).catch(() => undefined)))).filter(Boolean) : [];
+  return collab.concerned(state, route.owner, route.name, card, thread, mentioned);
 }
 
 /** Asks Selfhold for this site's account. Its window opens only from a click: call it before any other wait. */
@@ -207,6 +245,7 @@ async function render() {
       main().removeAttribute("aria-busy");
       afterRender();
       readHandles().then((found) => found && mine === rendering && render(), () => {});
+      if (me && route.view !== "inbox") countUnread();
     }
   }
 }
@@ -242,6 +281,7 @@ async function page(route, show) {
   }
   if (route.view === "home") return home();
   if (route.view === "settings") return settingsPage();
+  if (route.view === "inbox") return inboxPage();
   if (route.view === "owner") return ownerPage(route.owner);
   return repoPage(route, show);
 }
@@ -839,9 +879,22 @@ document.addEventListener("submit", (event) => {
   if (kind === "issue" || kind === "pull") {
     const id = collab.newId();
     const record = { repo, title: field("title").trim(), body: field("body"), time: time(), ...(kind === "pull" && { head: field("head"), base: field("base") }) };
-    run(form, () => collab.issue(me, id, record), () => (location.hash = href({ view: kind, owner: route.owner, name: route.name, author: me, id })));
+    const note = { kind, repo, thread: `${me}/${id}` };
+    run(
+      form,
+      async (state) => [...collab.issue(me, id, record), ...collab.notify(me, await concerned(state, route, undefined, record.body), record.time, id, note)],
+      () => (location.hash = href({ view: kind, owner: route.owner, name: route.name, author: me, id })),
+    );
   }
-  if (kind === "comment") run(form, () => collab.post(me, collab.newId(), { on: `${route.author}/${route.id}`, body: field("body"), time: time() }));
+  const thread = { author: route.author, id: route.id };
+  const tell = async (state, id, post, kind) => collab.notify(me, await concerned(state, route, thread, post.body), post.time, id, { kind, repo, thread: post.on });
+  if (kind === "comment") {
+    run(form, async (state) => {
+      const id = collab.newId();
+      const post = { on: `${route.author}/${route.id}`, body: field("body"), time: time() };
+      return [...collab.post(me, id, post), ...(await tell(state, id, post, "comment"))];
+    });
+  }
   if (kind === "review") {
     const review = { commit: null, path: form.dataset.path, line: Number(form.dataset.line), side: form.dataset.side };
     run(form, async (state) => {
@@ -849,7 +902,9 @@ document.addEventListener("submit", (event) => {
       const card = await records.card(state, route.owner, route.name);
       const issue = await collab.oneIssue(state, route.owner, route.name, card, route.author, route.id);
       const { headCommit } = await pullStatus(state, issue, await records.refs(sdk, state, route.owner, route.name));
-      return collab.post(me, collab.newId(), { on: `${route.author}/${route.id}`, body: field("body"), time: time(), review: { ...review, commit: headCommit } });
+      const id = collab.newId();
+      const post = { on: `${route.author}/${route.id}`, body: field("body"), time: time(), review: { ...review, commit: headCommit } };
+      return [...collab.post(me, id, post), ...(await tell(state, id, post, "review"))];
     });
   }
   if (kind === "labels") {
