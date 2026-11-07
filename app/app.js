@@ -332,6 +332,7 @@ function repoHead({ owner, name }, card, tab, ref) {
     ["commits", "Commits", href({ view: "commits", owner, name, ref: ref ?? "HEAD" })],
     ["branches", "Branches", href({ view: "branches", owner, name })],
     ["tags", "Tags", href({ view: "tags", owner, name })],
+    ["search", "Search", href({ view: "search", owner, name, ref: ref ?? "HEAD" })],
   ];
   const fork = card?.forkOf ? `<p class="fork-of">Forked from <a href="${href({ view: "code", ...collab.repoOf(card.forkOf) })}">${esc(shortAccount(collab.repoOf(card.forkOf).owner))}/${esc(collab.repoOf(card.forkOf).name)}</a></p>` : "";
   const forkButton = me && me !== owner ? `<button class="btn small" data-act="fork">Fork</button>` : "";
@@ -385,6 +386,7 @@ async function repoPage(route, show) {
   const at = await resolve(refs, route.ref);
   if (!at) return `${head("code")}<p class="empty">No branch or tag called ${esc(route.ref)}.</p>`;
   if (route.view === "commits") return head("commits", at.name) + (await commitsPage(route, refs, at));
+  if (route.view === "search") return searchPage(route, refs, at, head("search", at.name), show);
 
   const commit = await chain.read.commit(at.commit);
   const path = route.path ?? "";
@@ -413,6 +415,30 @@ async function repoPage(route, show) {
     return `${top}${path ? "" : cloneBox(route)}<section class="readme"><h2>${esc(readme.name)}</h2>${body}</section>`;
   }
   return top + (path ? "" : cloneBox(route));
+}
+
+/** Files of a branch whose path or text holds the query, read in the browser. */
+async function searchPage(route, refs, at, top, show) {
+  const form = `<div class="bar">${refPicker({ view: "search", owner: route.owner, name: route.name, q: route.q }, refs, at.name)}
+    <form class="search" data-form="search"><label class="sr-only" for="q">Search ${esc(at.name)}</label><input type="search" id="q" name="q" value="${esc(route.q)}" placeholder="Search file names and text in ${esc(at.name)}" required><button class="btn">Search</button></form></div>`;
+  if (!route.q.trim()) return `${top}${form}<p class="empty">Every file is read from the chain's blocks in your browser, so the first search of a big repo takes a while.</p>`;
+  const commit = await chain.read.commit(at.commit);
+  let shown = 0;
+  const found = await chain.read.grep(commit.tree, route.q.trim(), {
+    progress: (n, total) => {
+      if (n - shown >= 25 || n === total) show(`${top}${form}<p class="muted loading">Read ${(shown = n)} of ${total} files…</p>`);
+    },
+  });
+  const mark = (text) => {
+    const at = text.toLowerCase().indexOf(route.q.trim().toLowerCase());
+    return at < 0 ? esc(text) : `${esc(text.slice(0, at))}<mark>${esc(text.slice(at, at + route.q.trim().length))}</mark>${esc(text.slice(at + route.q.trim().length))}`;
+  };
+  const rows = found.matches.map((m) => {
+    const link = href({ view: "blob", owner: route.owner, name: route.name, ref: at.name, path: m.path });
+    return `<li class="hit"><a href="${link}" class="mono">${mark(m.path)}</a>${m.lines.length ? `<pre class="plain">${m.lines.map((l) => `<span class="muted">${l.line}</span>  ${mark(l.text)}`).join("\n")}</pre>` : ""}</li>`;
+  });
+  const note = `${found.matches.length}${found.more ? "+" : ""} file${found.matches.length === 1 ? "" : "s"} of ${found.files} match${found.skipped ? `; ${found.skipped} large or binary file${found.skipped === 1 ? " was" : "s were"} searched by name only` : ""}.`;
+  return `${top}${form}<p class="summary">${note}</p>${rows.length ? `<ul class="hits">${rows.join("")}</ul>` : ""}`;
 }
 
 function cloneBox(route) {
@@ -616,7 +642,9 @@ const stateBadge = (state) => `<span class="state ${state}">${{ open: "Open", cl
 
 async function issueList(route, state, card, refs) {
   const pulls = route.view === "pulls";
-  const all = (await collab.issues(state, route.owner, route.name, card)).filter((i) => Boolean(i.head) === pulls);
+  const words = (route.q ?? "").toLowerCase().split(/\s+/).filter(Boolean);
+  const hay = (i) => [i.title, i.body, ...i.labels, shortAccount(i.author), i.author].join("\n").toLowerCase();
+  const all = (await collab.issues(state, route.owner, route.name, card)).filter((i) => Boolean(i.head) === pulls && words.every((w) => hay(i).includes(w)));
   // A merged pull request is done, whatever its record says.
   const shown = await Promise.all(all.map(async (i) => ({ ...i, state: pulls && i.state === "open" ? (await pullStatus(state, i, refs, 500).catch(() => ({ state: "open" }))).state : i.state })));
   const open = shown.filter((i) => i.state === "open");
@@ -627,8 +655,9 @@ async function issueList(route, state, card, refs) {
       <a class="issue-title" href="${href({ view: pulls ? "pull" : "issue", owner: route.owner, name: route.name, author: i.author, id: i.id })}">${esc(i.title)}</a>${chips(i.labels)}
       <span class="muted">opened ${esc(ago(i.time))} by ${byline(i.author)}${pulls ? ` · ${esc(i.head.replace(/^[^/]+/, (o) => shortAccount(o)))} → ${esc(i.base)}` : ""}</span></li>`);
   return `<div class="bar between"><nav class="seg" aria-label="State">
-      <a href="${href({ view: route.view, owner: route.owner, name: route.name })}" ${route.closed ? "" : 'aria-current="page"'}>${open.length} open</a>
-      <a href="${href({ view: route.view, owner: route.owner, name: route.name, closed: true })}" ${route.closed ? 'aria-current="page"' : ""}>${done.length} ${pulls ? "closed or merged" : "closed"}</a></nav>
+      <a href="${href({ view: route.view, owner: route.owner, name: route.name, q: route.q })}" ${route.closed ? "" : 'aria-current="page"'}>${open.length} open</a>
+      <a href="${href({ view: route.view, owner: route.owner, name: route.name, closed: true, q: route.q })}" ${route.closed ? 'aria-current="page"' : ""}>${done.length} ${pulls ? "closed or merged" : "closed"}</a></nav>
+      <form class="search" data-form="issue-search"><label class="sr-only" for="q">Search ${kind}</label><input type="search" id="q" name="q" value="${esc(route.q ?? "")}" placeholder="Search ${kind}"></form>
       <a class="btn primary" href="${href({ view: `${route.view}-new`, owner: route.owner, name: route.name })}">New ${pulls ? "pull request" : "issue"}</a></div>
     ${rows.length ? `<ul class="issues">${rows.join("")}</ul>` : `<p class="empty">No ${route.closed ? (pulls ? "closed or merged" : "closed") : "open"} ${kind}.</p>`}`;
 }
@@ -893,6 +922,10 @@ document.addEventListener("submit", (event) => {
   const kind = form.dataset.form;
   if (!kind) return;
   event.preventDefault();
+  if (kind === "search" || kind === "issue-search") {
+    location.hash = href({ ...route, q: field("q").trim() });
+    return;
+  }
   const repo = `${route.owner}/${route.name}`;
   if (kind === "issue" || kind === "pull") {
     const id = collab.newId();

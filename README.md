@@ -97,6 +97,10 @@ device's work for each fee, so taking part needs no coins.
   says so.
 - **Releases**: a maintainer writes notes for a tag; they show on the Tags
   page.
+- **Search**: a repo's Search tab finds files by name and text on any branch
+  or tag, reading the blocks in the browser (ky's 115 files: about 30 s the
+  first time); the issue and pull request lists filter by words in a title,
+  description, label or author.
 - **Inbox**: whoever opens an issue or pull request, or comments, tells the
   repo's maintainers, the thread's author and commenters, and anyone they
   mention by @handle, in the same transaction. The Inbox shows these notes,

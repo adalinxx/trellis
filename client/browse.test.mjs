@@ -138,3 +138,15 @@ test("a commit's header and message, and text against binary", () => {
   assert.equal(isText(new TextEncoder().encode("hello\n")), true);
   assert.equal(isText(Uint8Array.of(1, 0, 2)), false);
 });
+
+test("search finds files by path and text, like git grep -i", async () => {
+  const { repo, known, read } = await sample();
+  const commit = await read.commit(known.get(run(repo, ["rev-parse", "main"])));
+  const found = await read.grep(commit.tree, "two");
+  assert.deepEqual(found.matches, [{ path: "src/a.txt", lines: [{ line: 2, text: "TWO" }] }]);
+  assert.equal(found.files, 5);
+  assert.equal(found.skipped, 1, "big.bin is over the size read, so only its name is searched");
+  assert.deepEqual((await read.grep(commit.tree, "SIDE")).matches.map((m) => m.path), ["side.txt"]);
+  assert.deepEqual((await read.grep(commit.tree, "c.t")).matches, [{ path: "src/c.txt", lines: [] }], "a path match");
+  assert.equal(run(repo, ["grep", "-il", "two", "main"]), "main:src/a.txt");
+});

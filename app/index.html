@@ -133,6 +133,12 @@ table.code tbody { display: table; width: 100%; }
 #unread { font-weight: 600; color: var(--accent, currentColor); }
 .inbox-list li.unread { border-left: 3px solid var(--accent, currentColor); padding-left: 9px; }
 .inbox-list p { margin: 4px 0 0; font-size: 13px; }
+form.search { display: flex; gap: 8px; flex: 1; min-width: 0; max-width: 28rem; }
+form.search input { flex: 1; min-width: 0; }
+.hits { list-style: none; padding: 0; margin: 0; }
+.hits li { padding: 10px 0; border-bottom: 1px solid var(--line, rgba(127,127,127,.25)); }
+.hits pre { margin: 6px 0 0; font-size: 12.5px; overflow-x: auto; }
+mark { background: var(--accent-soft); color: inherit; border-radius: 2px; }
 #notices { display: grid; gap: 8px; margin-top: 12px; } #notices:empty { display: none; }
 .notice { display: flex; gap: 10px; padding: 10px 12px; border-radius: 8px; background: var(--del); border: 1px solid var(--line); font-size: 13.5px; }
 .notice p { margin: 0; flex: 1; } .notice .close { border: 0; background: none; cursor: pointer; color: var(--muted); font-size: 18px; line-height: 1; }

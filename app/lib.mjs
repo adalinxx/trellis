@@ -23,16 +23,17 @@ export function parseRoute(hash) {
   if (parts.length === 1) return { view: "owner", owner: parts[0] };
   const [owner, name, view = "code", ref, ...path] = parts;
   if (view === "commit") return { view, owner, name, cid: ref };
-  if (view === "issues" || view === "pulls") return ref === "new" ? { view: `${view}-new`, owner, name } : { view, owner, name, closed: query.get("state") === "closed" };
+  if (view === "issues" || view === "pulls") return ref === "new" ? { view: `${view}-new`, owner, name } : { view, owner, name, closed: query.get("state") === "closed", ...(query.get("q") && { q: query.get("q") }) };
   if (view === "issue" || view === "pull") return { view, owner, name, author: ref, id: path[0], tab: path[1] === "files" || path[1] === "commits" ? path[1] : "conversation", ...(query.get("since") && { since: query.get("since") }) };
   if (view === "commits") return { view, owner, name, ref, limit: Number(query.get("n")) || 30 };
   if (view === "branches" || view === "tags") return { view, owner, name };
+  if (view === "search") return { view, owner, name, ref, q: query.get("q") ?? "" };
   if (view === "tree" || view === "blob") return { view, owner, name, ref, path: path.join("/") };
   return { view: "code", owner, name };
 }
 
 /** The hash for a route (the inverse of parseRoute). */
-export function href({ view, owner, name, ref, path, cid, limit, closed, author, id, tab, since }) {
+export function href({ view, owner, name, ref, path, cid, limit, closed, author, id, tab, since, q }) {
   const e = encodeURIComponent;
   if (view === "home") return "#/";
   if (view === "settings") return "#/settings";
@@ -41,7 +42,11 @@ export function href({ view, owner, name, ref, path, cid, limit, closed, author,
   const base = `#/${e(owner)}/${e(name)}`;
   if (view === "commit") return `${base}/commit/${e(cid)}`;
   if (view === "commits") return `${base}/commits/${e(ref)}${limit ? `?n=${limit}` : ""}`;
-  if (view === "issues" || view === "pulls") return `${base}/${view}${closed ? "?state=closed" : ""}`;
+  if (view === "issues" || view === "pulls") {
+    const query = new URLSearchParams({ ...(closed && { state: "closed" }), ...(q && { q }) }).toString();
+    return `${base}/${view}${query ? `?${query}` : ""}`;
+  }
+  if (view === "search") return `${base}/search/${e(ref ?? "HEAD")}${q ? `?q=${e(q)}` : ""}`;
   if (view === "issues-new" || view === "pulls-new") return `${base}/${view.slice(0, -4)}/new`;
   if (view === "issue" || view === "pull") return `${base}/${view}/${e(author)}/${e(id)}${tab && tab !== "conversation" ? `/${tab}` : ""}${since ? `?since=${e(since)}` : ""}`;
   if (view === "branches" || view === "tags") return `${base}/${view}`;
