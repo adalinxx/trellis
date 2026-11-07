@@ -170,10 +170,18 @@ export async function main(argv = process.argv.slice(2)) {
   const urls = (setting(gitDir, "node", "TRELLIS_NODE") ?? "").split(",").map((u) => u.trim().replace(/\/+$/, "")).filter(Boolean);
   if (urls.length === 0) throw new Error("no Trellis node: set trellis.node (git config) or TRELLIS_NODE");
   const chainPath = (setting(gitDir, "chain", "TRELLIS_CHAIN") ?? "Nexus/trellis").split("/");
-  const { name } = parsed;
-  const owner = await addressOf(monikerAt(gitDir, urls), parsed.owner);
+  let { name } = parsed;
+  let owner = await addressOf(monikerAt(gitDir, urls), parsed.owner);
   const chain = chainAt(urls, chainPath);
   const cache = cidCache(gitDir);
+  // A moved repo (both cards say so) is fetched from and pushed to where it is now.
+  {
+    const now = await records.whereNow(await chain.state(), owner, name);
+    if (now.moved) {
+      say(`${owner}/${name} moved to ${now.owner}/${now.name}; using it there (git remote set-url origin trellis::${now.owner}/${now.name})`);
+      ({ owner, name } = now);
+    }
+  }
 
   // The remote's refs: ref name → { cid, id }, the id as the commit block claims it.
   let remote, card, sealing;

@@ -8,7 +8,7 @@ import * as records from "./records.mjs";
  * The repo `origin` names, and a way to write records as trellis.key's
  * account with the fee paid for work through trellis.sponsor.
  */
-export async function origin(gitDir) {
+export async function origin(gitDir, { follow = true, say = () => {} } = {}) {
   const sdk = await import("../vendor/lattice-sdk.js");
   const { execFileSync } = await import("node:child_process");
   const { chainAt, monikerAt, parseAddress, setting } = await import("./remote.mjs");
@@ -22,10 +22,18 @@ export async function origin(gitDir) {
   const urls = (get("node", "TRELLIS_NODE") ?? "").split(",").map((u) => u.trim().replace(/\/+$/, "")).filter(Boolean);
   if (!urls.length) throw new Error("set trellis.node (git config) first");
   const moniker = monikerAt(gitDir, urls);
-  const { name } = parsed;
-  const owner = await addressOf(moniker, parsed.owner);
+  let { name } = parsed;
+  let owner = await addressOf(moniker, parsed.owner);
   const chainPath = (get("chain", "TRELLIS_CHAIN") ?? "Nexus/trellis").split("/");
   const chain = chainAt(urls, chainPath);
+  // A moved repo (both cards say so, records.mjs) is read and written where it is now.
+  if (follow) {
+    const now = await records.whereNow(await chain.state(), owner, name);
+    if (now.moved) {
+      say(`${owner}/${name} moved to ${now.owner}/${now.name} (git remote set-url origin trellis::${now.owner}/${now.name})`);
+      ({ owner, name } = now);
+    }
+  }
   const { signer: signerOf } = await import("./signer.mjs");
   const signer = (say) => signerOf(sdk, gitDir, { urls, say });
   return {
@@ -349,4 +357,72 @@ export async function runCI(gitDir, { once = false, every = 60, check: checkName
 async function refusePrivate(card, what, owner, name) {
   const { isPrivate } = await import("./private.mjs");
   if (isPrivate(card)) throw new Error(`${owner}/${name} is private, and ${what} are public records on the chain: it has none`);
+}
+
+/**
+ * `trellis transfer <new owner>[/<new name>]`, by the owner: offers the repo
+ * to that account. Nothing moves until they take it with `trellis accept`;
+ * `trellis transfer --cancel` takes the offer back (or, once taken, undoes
+ * the move: the old address then names the old repo again).
+ */
+export async function transfer(gitDir, to, { cancel = false, say = () => {} } = {}) {
+  const repo = await origin(gitDir, { follow: false });
+  const { owner, name, chain } = repo;
+  if (repo.signer(say).address !== owner) throw new Error(`only ${owner}, the owner, gives ${owner}/${name} away`);
+  const card = await records.card(await chain.state(), owner, name);
+  if (!card) throw new Error(`${owner}/${name} doesn't exist`);
+  if (cancel) {
+    const { movedTo: _offer, ...rest } = card;
+    await repo.write(records.repo(owner, name, rest), { say, what: `Keep ${name}` });
+    return undefined;
+  }
+  if (!to) throw new Error("trellis transfer <address or @handle>[/<name>]");
+  const [who, newName = name] = to.split("/");
+  records.checkName(newName);
+  const address = await repo.addressOf(who);
+  if (address === owner && newName === name) throw new Error("that's where it is");
+  await repo.write(records.repo(owner, name, { ...card, movedTo: `${address}/${newName}` }), { say, what: `Offer ${name} to ${address}` });
+  return `${address}/${newName}`;
+}
+
+/**
+ * `trellis accept`, in a clone of a repo offered to this key's account: takes
+ * it. The new card names where it came from; its maintainers, readers and
+ * runners carry over (the old owner doesn't, unless named again); its
+ * branches and tags point where they did, so nothing is pushed again. A
+ * private repo's keys are sealed again for its members under the new name,
+ * with a new one for pushes from then on. `origin` is set to the new address.
+ */
+export async function accept(gitDir, { say = () => {} } = {}) {
+  const { execFileSync } = await import("node:child_process");
+  const { boxOf, isPrivate, publishBox, rewrap } = await import("./private.mjs");
+  const repo = await origin(gitDir, { follow: false });
+  const { sdk, owner, name, chain } = repo;
+  const me = repo.signer(say);
+  const state = await chain.state();
+  const card = await records.card(state, owner, name);
+  const [toOwner, toName] = String(card?.movedTo ?? "").split("/");
+  if (toOwner !== me.address || !toName) throw new Error(`${owner}/${name} isn't offered to ${me.address}${card?.movedTo ? ` (it's offered to ${card.movedTo})` : ""}`);
+  const there = await records.card(state, me.address, toName);
+  if (there && there.movedFrom !== `${owner}/${name}`) throw new Error(`you already have a repo named ${toName}: offer it under another name`);
+  const keep = (list) => (Array.isArray(list) ? [...new Set(list.filter((a) => typeof a === "string" && a !== me.address && a !== owner))] : undefined);
+  const next = {
+    ...(typeof card.description === "string" && { description: card.description }),
+    ...(keep(card.delegates)?.length && { delegates: keep(card.delegates) }),
+    ...(keep(card.readers)?.length && { readers: keep(card.readers) }),
+    ...(keep(card.runners)?.length && { runners: keep(card.runners) }),
+    movedFrom: `${owner}/${name}`,
+  };
+  const writes = [];
+  if (isPrivate(card)) {
+    if (!me.privateKey) throw new Error("taking a private repo needs a key file in trellis.key (Selfhold can't open its keys)");
+    const members = [me.address, ...(next.delegates ?? []), ...(next.readers ?? [])];
+    next.private = await rewrap(`${owner}/${name}`, `${me.address}/${toName}`, card, me.address, me.privateKey, members, async (a) => (a === me.address ? (await import("./seal.mjs")).boxKeys(me.privateKey).publicKey : boxOf(state, a)));
+    if (!(await boxOf(state, me.address))) writes.push(...publishBox(me.address, me.privateKey));
+  }
+  writes.push(...records.repo(me.address, toName, next));
+  for (const [ref, word] of await records.words(sdk, state, owner, name, card)) if (word.commit) writes.push(...records.ref(me.address, toName, ref, word.commit));
+  await repo.write(writes, { say, what: `Take ${name} from ${owner}` });
+  execFileSync("git", ["--git-dir", gitDir, "remote", "set-url", "origin", `trellis::${me.address}/${toName}`]);
+  return `${me.address}/${toName}`;
 }

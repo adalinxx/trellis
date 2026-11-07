@@ -161,6 +161,24 @@ your OS user: run it under an account of its own, holding only the runner's
 key, and only for repos you trust, as with any CI runner. Private repos have
 no checks or releases, since both are public records.
 
+### Moving a repo
+
+```sh
+trellis transfer <address or @handle>[/<name>]   # the owner offers it
+trellis accept                                   # the new owner, in a clone of it, takes it
+trellis transfer --cancel                        # take the offer back
+```
+
+A repo moves when both cards say so: the old one's `movedTo`, the new one's
+`movedFrom`. Neither alone moves anything. Taking it copies its branches and
+tags as they are (nothing is pushed again) and carries over its delegates,
+readers and runners; the old owner isn't a maintainer any more unless named
+again. Old `trellis::` addresses keep working: git fetches from and pushes to
+where the repo is now, and says so. The page shows the move on both sides;
+issues and pull requests from before it stay at the old address, to read. A
+private repo moves only to one of its members, whose key file seals its keys
+again for the new name, with a new key for pushes from then on.
+
 ### Private repos
 
 ```sh

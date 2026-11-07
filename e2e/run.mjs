@@ -281,6 +281,27 @@ try {
   assert.match(tipChecks[0].summary, /checking origin\/main/);
   console.log("ci: .trellis/ci run on the tip and its result posted; a stranger's check not counted");
 
+  // A transfer: Carol offers a repo to Alice, who takes it; the old address
+  // then clones and pushes where it is now, and Carol is no maintainer there.
+  const plot = newRepo(join(work, "plot"));
+  writeFileSync(join(plot, "plot.txt"), "beans\n");
+  run(plot, "add", "-A");
+  run(plot, "commit", "-q", "-m", "beans");
+  run(plot, "remote", "add", "origin", `trellis::${carol.address}/plot`);
+  gitWith(helperEnv(authorNode), plot, "push", "-q", "origin", "main");
+  trellis(helperEnv(authorNode), plot, "transfer", alice.address);
+  const offered = join(work, "plot-alice");
+  gitWith(helperEnv(authorNode, aliceKey), work, "clone", "-q", `trellis::${carol.address}/plot`, offered);
+  trellis(helperEnv(authorNode, aliceKey), offered, "accept");
+  assert.equal(run(offered, "remote", "get-url", "origin"), `trellis::${alice.address}/plot`);
+  await until("the reader's node has the move", async () => (await records.whereNow(await state(readerNode), carol.address, "plot")).moved);
+  const viaOld = join(work, "plot-old-url");
+  gitWith(helperEnv(readerNode), work, "clone", "-q", `trellis::${carol.address}/plot`, viaOld);
+  assert.equal(readFileSync(join(viaOld, "plot.txt"), "utf8"), "beans\n");
+  run(plot, "commit", "-q", "--allow-empty", "-m", "by the old owner");
+  assert.match(gitFails(helperEnv(authorNode), plot, "push", "origin", "main"), /not one of .*plot's maintainers/);
+  console.log("transfer: offered, taken; the old address leads to the new one; the old owner no longer pushes");
+
   // A private repo: sealed blocks; its owner and a reader clone it, nobody
   // else can; a dropped reader can't read what is pushed after.
   const vault = newRepo(join(work, "vault"));

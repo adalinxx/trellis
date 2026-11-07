@@ -13,6 +13,10 @@
 // a push sets seq one past the word it replaces, so the latest push wins, as
 // Radicle's delegates' refs make a canonical branch. A null commit deletes.
 // Words from anyone the card no longer names don't count.
+//
+// A repo moves to another account (or name) when both cards say so: the old
+// one's `movedTo: "<owner>/<name>"`, the new one's `movedFrom` naming it back.
+// Either alone moves nothing, so neither side can claim the other's repo.
 
 const NAME = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,99}$/;
 
@@ -131,4 +135,30 @@ export async function owners(state, name) {
   const out = [];
   for await (const [key, value] of state.list(prefix)) if (value === "1" && !key.slice(prefix.length).includes("/")) out.push(key.slice(prefix.length));
   return out;
+}
+
+const place = (text) => {
+  const m = typeof text === "string" ? /^([^/]+)\/([^/]+)$/.exec(text) : null;
+  if (!m || !NAME.test(m[2])) return undefined;
+  return { owner: m[1], name: m[2] };
+};
+
+/** Where `<a>/<name>` moved, `{ owner, name }`, if both cards say so; else undefined. */
+export async function movedTo(state, a, name, theCard) {
+  const there = place((theCard === undefined ? await card(state, a, name) : theCard)?.movedTo);
+  if (!there || (there.owner === a && there.name === name)) return undefined;
+  return (await card(state, there.owner, there.name))?.movedFrom === `${a}/${name}` ? there : undefined;
+}
+
+/** Where `<a>/<name>` is now, moves followed (at most 8): `{ owner, name, moved }`. */
+export async function whereNow(state, a, name) {
+  let at = { owner: a, name };
+  const seen = new Set([`${a}/${name}`]);
+  for (let hop = 0; hop < 8; hop++) {
+    const next = await movedTo(state, at.owner, at.name);
+    if (!next || seen.has(`${next.owner}/${next.name}`)) break;
+    seen.add(`${next.owner}/${next.name}`);
+    at = next;
+  }
+  return { ...at, moved: at.owner !== a || at.name !== name };
 }

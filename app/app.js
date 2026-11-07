@@ -383,7 +383,21 @@ function crumbs(route, ref, path, last = true) {
 async function repoPage(route, show) {
   const { card, refs } = await repoOf(route.owner, route.name);
   if (!card && refs.size === 0) return `<h1>Not found</h1><p class="empty">${esc(shortAccount(route.owner))} has no repository called ${esc(route.name)} on ${esc(settings.chain)}.</p>`;
-  const head = (tab, ref) => repoHead(route, card, tab, ref);
+  // A move (both cards say so, client/records.mjs): the old address keeps its
+  // issues and pull requests to read; the code, and anything new, is there.
+  const state = await chain.state();
+  const moved = await records.movedTo(state, route.owner, route.name, card);
+  const fromText = typeof card?.movedFrom === "string" ? card.movedFrom : "";
+  const [fromOwner, fromName] = fromText.split("/");
+  const from = fromOwner && fromName && (await records.movedTo(state, fromOwner, fromName).catch(() => undefined));
+  const cameFrom = from && from.owner === route.owner && from.name === route.name ? { owner: fromOwner, name: fromName } : undefined;
+  const banner = moved
+    ? `<p class="moved panel">This repository moved to <a href="${href({ view: "code", ...moved })}">${esc(shortAccount(moved.owner))}/${esc(moved.name)}</a>. Its issues and pull requests from before the move are still here to read.</p>`
+    : cameFrom
+      ? `<p class="moved panel">Moved here from ${esc(shortAccount(cameFrom.owner))}/${esc(cameFrom.name)}: <a href="${href({ view: "issues", ...cameFrom })}">its earlier issues</a> and <a href="${href({ view: "pulls", ...cameFrom })}">pull requests</a>.</p>`
+      : "";
+  const head = (tab, ref) => repoHead(route, card, tab, ref) + banner;
+  if (moved && !["issues", "pulls", "issue", "pull"].includes(route.view)) return head(route.view.startsWith("pulls") ? "pulls" : route.view.startsWith("issues") ? "issues" : "code");
   // A private repo's blocks are sealed for its members' key files (client/seal.mjs); the page can't open them.
   if (Array.isArray(card?.private?.keys)) {
     return `${head("code")}<div class="panel"><h2>A private repository</h2><p>Its files and history are sealed so only its members read them, with their key files: clone it with git.</p>
