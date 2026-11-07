@@ -31,3 +31,15 @@ test("members get the repo's keys; a dropped one is left out of the next", async
   assert.equal(opens(repoSealer("olga", "r", card3, "olga", keyOf(1)), fresh).cid, sdk.cidV1DagCbor(block));
   assert.equal(opens(bob3, old).cid, sdk.cidV1DagCbor(block), "history stays readable to members");
 });
+
+test("a moved private repo: its members read its history under the new name; a new key from then on", async () => {
+  const { rewrap } = await import("./private.mjs");
+  const card1 = await redeal("olga", "r", { private: newPrivate("olga", "r", box(1)) }, { private: newPrivate("olga", "r", box(1)), readers: ["bob"] }, "olga", keyOf(1), boxes);
+  const old = sealedBy(repoSealer("olga", "r", card1, "olga", keyOf(1)));
+  const moved = { readers: ["carol"], private: await rewrap("olga/r", "bob/r2", card1, "bob", keyOf(2), ["bob", "carol"], boxes) };
+  assert.equal(moved.private.keys.length, card1.private.keys.length + 1);
+  const carol = repoSealer("bob", "r2", moved, "carol", keyOf(3));
+  assert.equal(opens(carol, old).cid, sdk.cidV1DagCbor(block), "old blocks open under the new name");
+  assert.throws(() => repoSealer("bob", "r2", moved, "olga", keyOf(1)), /one of its members/, "the old owner isn't a member unless named");
+  await assert.rejects(rewrap("olga/r", "dave/r", card1, "carol", keyOf(3), ["carol"], boxes), /don't hold key/);
+});

@@ -89,3 +89,32 @@ export async function redeal(owner, name, before, after, address, privateKey, bo
   }
   return { ...after, private: { keys } };
 }
+
+/**
+ * A moved private repo's `private` field: every key version of `from`
+ * (`<owner>/<name>`), opened by a member holding them all (`address`,
+ * `privateKey`), sealed again for `to`'s members, plus a new version for
+ * pushes from then on (whoever is left out still holds the old ones).
+ */
+export async function rewrap(from, to, card, address, privateKey, now, boxes) {
+  const mine = boxKeys(privateKey);
+  const keys = [];
+  for (const { v, to: sealedTo } of card.private.keys) {
+    const key = openKey(sealedTo?.[address], mine, from);
+    if (!key) throw new Error(`you don't hold key ${v} of ${from}: a private repo moves to one of its members`);
+    keys.push({ v, key });
+  }
+  keys.push({ v: Math.max(...keys.map((k) => k.v)) + 1, key: newRepoKey() });
+  if (keys.at(-1).v > 255) throw new Error(`${from} has had 255 keys: make a new repo`);
+  const out = [];
+  for (const { v, key } of keys) {
+    const sealed = {};
+    for (const m of now) {
+      const box = await boxes(m);
+      if (!box) throw new Error(`${m} has no box key yet: they publish one by pushing anywhere with trellis, or with trellis box`);
+      sealed[m] = sealKeyTo(box, key, to);
+    }
+    out.push({ v, to: sealed });
+  }
+  return { keys: out };
+}

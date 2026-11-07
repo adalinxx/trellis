@@ -170,10 +170,31 @@ export async function main(argv = process.argv.slice(2)) {
   const urls = (setting(gitDir, "node", "TRELLIS_NODE") ?? "").split(",").map((u) => u.trim().replace(/\/+$/, "")).filter(Boolean);
   if (urls.length === 0) throw new Error("no Trellis node: set trellis.node (git config) or TRELLIS_NODE");
   const chainPath = (setting(gitDir, "chain", "TRELLIS_CHAIN") ?? "Nexus/trellis").split("/");
-  const { name } = parsed;
-  const owner = await addressOf(monikerAt(gitDir, urls), parsed.owner);
+  let { name } = parsed;
+  let owner = await addressOf(monikerAt(gitDir, urls), parsed.owner);
   const chain = chainAt(urls, chainPath);
   const cache = cidCache(gitDir);
+  // A moved repo (both cards say so) is fetched from where it is now, and
+  // the remote is set to that address, so the old one is trusted no longer
+  // (its owner could point it elsewhere later). A push through the old
+  // address is refused once: it goes where you mean only after you see where.
+  let movedFrom;
+  {
+    const now = await records.whereNow(await chain.state(), owner, name);
+    if (now.moved) {
+      movedFrom = `${owner}/${name}`;
+      ({ owner, name } = now);
+      const remoteName = argv.length > 1 && !argv[0].includes("::") ? argv[0] : undefined;
+      if (remoteName) {
+        try {
+          execFileSync("git", ["--git-dir", gitDir, "remote", "set-url", remoteName, `trellis::${owner}/${name}`], { stdio: "ignore" });
+          say(`${movedFrom} moved to ${owner}/${name}: remote ${remoteName} now points there`);
+        } catch {
+          say(`${movedFrom} moved to ${owner}/${name} (git remote set-url ${remoteName} trellis::${owner}/${name})`);
+        }
+      } else say(`${movedFrom} moved to ${owner}/${name}`);
+    }
+  }
 
   // The remote's refs: ref name → { cid, id }, the id as the commit block claims it.
   let remote, card, sealing;
@@ -266,6 +287,7 @@ export async function main(argv = process.argv.slice(2)) {
     const sponsor = sponsors[0];
     const fail = (why) => specs.map((spec) => `error ${spec.split(":")[1]} ${why}\n`).join("");
     if (!sponsor) return fail("no sponsor: set trellis.sponsor (git config) or TRELLIS_SPONSOR");
+    if (movedFrom) return fail(`${movedFrom} moved to ${owner}/${name}: push there (the remote now points to it), then push again`);
     let me;
     try {
       me = signer(sdk, gitDir, { say, urls });

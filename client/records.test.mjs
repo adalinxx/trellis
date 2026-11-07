@@ -100,3 +100,14 @@ test("a seq past the cap counts as the cap, where the owner's word wins", async 
   assert.equal(records.nextSeq(Number.MAX_SAFE_INTEGER), records.MAX_SEQ);
   assert.equal((await records.refs(sdk, state, "alice", "r")).get(MAIN), at(2), "the owner can always take a ref back");
 });
+
+test("a repo moves only when both cards say so", async () => {
+  const both = memory([...records.repo("olga", "r", { movedTo: "pat/r2" }), ...records.repo("pat", "r2", { movedFrom: "olga/r", movedTo: "quin/r" }), ...records.repo("quin", "r", { movedFrom: "pat/r2" })]);
+  assert.deepEqual(await records.whereNow(both, "olga", "r"), { owner: "quin", name: "r", moved: true }, "moves followed");
+  const claimed = memory([...records.repo("olga", "r", {}), ...records.repo("mallory", "r", { movedFrom: "olga/r" })]);
+  assert.equal(await records.movedTo(claimed, "olga", "r"), undefined, "a new card alone takes nothing");
+  const offered = memory([...records.repo("olga", "r", { movedTo: "pat/r" })]);
+  assert.deepEqual(await records.whereNow(offered, "olga", "r"), { owner: "olga", name: "r", moved: false }, "an offer not taken moves nothing");
+  const loop = memory([...records.repo("a", "r", { movedTo: "b/r", movedFrom: "b/r" }), ...records.repo("b", "r", { movedTo: "a/r", movedFrom: "a/r" })]);
+  assert.equal((await records.whereNow(loop, "a", "r")).owner, "b", "a loop ends");
+});
