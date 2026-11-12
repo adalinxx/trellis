@@ -65,20 +65,34 @@ const settings = {
   wallet: walletPage(query.get("wallet") ?? WALLET_PAGE),
 };
 
-// The chain, as the node in Settings serves it, and Moniker, where @handles are.
-let chain, moniker;
+// The chain, and Moniker, where @handles are, each read from the nodes that
+// serve it: the node in Settings when it serves it, then the hosts its
+// directory declares (the SDK's ChainNodes); made again when Settings change.
+const browserFetch = (...args) => fetch(...args);
+let nodes, chain, moniker;
 function connect() {
+  try {
+    nodes = new sdk.ChainNodes(settings.node, { fetch: browserFetch });
+  } catch (error) {
+    // A node the SDK won't dial (not https, nor http on this computer): every read says so, and Settings stay open.
+    nodes = { read: () => Promise.reject(error) };
+  }
   chain = connectTo(settings.chain.split("/"));
   moniker = connectTo(settings.moniker.split("/"));
 }
 function connectTo(chainPath) {
-  const client = new sdk.VolumeClient(new sdk.BatchingVolumeTransport(new sdk.HTTPVolumeTransport(`${settings.node}/volumes`, { chainPath })));
+  // One client per node, so each keeps its own batches.
+  const clients = new Map();
+  const clientOn = (url) => {
+    if (!clients.has(url)) clients.set(url, new sdk.VolumeClient(new sdk.BatchingVolumeTransport(new sdk.HTTPVolumeTransport(`${url}/volumes`, { chainPath }))));
+    return clients.get(url);
+  };
   // A node answers 503 while it fetches content from its peers: ask again.
   const volumes = {
     async get(cid) {
       for (let wait = 500, waited = 0; ; waited += wait, wait = Math.min(wait * 2, 4000)) {
         try {
-          return await client.get(cid);
+          return await nodes.read(chainPath, (node) => clientOn(node.url).get(cid));
         } catch (error) {
           if (waited > 60_000) throw error;
           await new Promise((r) => setTimeout(r, wait));
@@ -96,13 +110,13 @@ function connectTo(chainPath) {
     path: chainPath,
     /** Forget the state read, so the next read is at the node's new tip. */
     stale: () => (current = undefined),
-    // The state at the node's tip, read again when over 3 s old.
+    // The state at a serving node's tip, read again when over 3 s old.
     async state() {
       if (!current || Date.now() - current.at > 3_000) {
-        current = (async () => {
-          const { generalStateCID } = await tip(sdk, settings.node, chainPath, volumes);
+        current = nodes.read(chainPath, async (node) => {
+          const { generalStateCID } = await tip(sdk, node.url, chainPath, volumes);
           return view(load, generalStateCID);
-        })();
+        });
         current.at = Date.now();
         current.catch(() => (current = undefined));
       }

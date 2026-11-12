@@ -60,9 +60,11 @@ sponsors' hosts); only a block none of them holds is fetched from peers. ky's
 `app/` is a static page: serve the repository root from any static host and
 open `app/`. It lists the chain's repos and shows a repo's files, README,
 history, branches, tags and each commit's changes, for any branch, tag or
-commit. It reads from the node in Settings (by default
+commit. It starts at the node in Settings (by default
 `lattice-testnet-apps-iad.fly.dev`, chain `Nexus/testnet/trellis`; `?node=`
-and `?chain=` on the page's URL override both) and reads only the blocks it
+and `?chain=` on the page's URL override both), reads from it when it serves
+the chain and otherwise from the hosts the chain's directory declares, and
+reads only the blocks it
 shows: a directory without its files, a file's size without its chunks, a
 commit's changes only in the subtrees that differ. A file over 2 MiB is read
 only when asked. Every block is checked against its CID. A README's raw HTML
