@@ -38,7 +38,7 @@ in the page: `trellis login` once, and each write after that opens a page on
 ### Testnet
 
 Trellis runs on testnet as `Nexus/testnet/trellis`, served publicly by
-`lattice-testnet-apps-iad.fly.dev` and `lattice-testnet-apps-ams.fly.dev`
+`lattice-testnet-apps-iad.fly.dev` and `ams.testnet.lattice.build`
 (list both in `trellis.node` to read from either), with a sponsor on iad:
 
 ```sh
